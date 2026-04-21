@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { FirebaseAdminService } from "./firebase-admin.service";
 
@@ -249,6 +255,48 @@ export class FirebaseDataService {
     return value;
   }
 
+  private async ensureUserProfileExists(payload: {
+    userId: string;
+    email: string;
+    name: string;
+  }) {
+    const now = this.now();
+    const userRef = this.collection<UserRecord>("users").doc(payload.userId);
+    const currentUser = await userRef.get();
+
+    if (!currentUser.exists) {
+      const user: UserRecord = {
+        id: payload.userId,
+        email: payload.email,
+        name: payload.name,
+        avatarLabel: this.buildAvatarLabel(payload.name),
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      await userRef.set(user);
+    }
+
+    const profiles = await this.listByField<ProfileRecord>("profiles", "userId", payload.userId);
+    if (!profiles.length) {
+      const profile: ProfileRecord = {
+        id: randomUUID(),
+        userId: payload.userId,
+        timezone: "America/Sao_Paulo",
+        language: "pt-BR",
+        energyPattern: "morning_peak",
+        workStyle: "deep_work",
+        studyStyle: "active_recall",
+        sleepSchedule: "23:00-07:00",
+        preferences: { onboardingCompleted: false },
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      await this.setDoc("profiles", profile);
+    }
+  }
+
   private async updateDoc<T extends { id: string }>(
     collectionName: string,
     id: string,
@@ -279,6 +327,31 @@ export class FirebaseDataService {
       .join("")
       .slice(0, 2)
       .toUpperCase();
+  }
+
+  private normalizeFirebaseAuthError(error: unknown) {
+    const code =
+      typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+    const message =
+      typeof error === "object" && error !== null && "message" in error ? String(error.message) : "";
+
+    if (code.includes("email-already-exists")) {
+      return new ConflictException("EMAIL_EXISTS");
+    }
+
+    if (code.includes("invalid-password")) {
+      return new BadRequestException("INVALID_PASSWORD");
+    }
+
+    if (code.includes("invalid-email")) {
+      return new BadRequestException("INVALID_EMAIL");
+    }
+
+    if (code.includes("missing-password")) {
+      return new BadRequestException("MISSING_PASSWORD");
+    }
+
+    return new BadRequestException(message || "FIREBASE_AUTH_ERROR");
   }
 
   private async ensureDemoWorkspace(userId: string) {
@@ -718,45 +791,74 @@ export class FirebaseDataService {
   }
 
   async register(payload: { name: string; email: string; password: string }) {
-    const now = this.now();
-    const authUser = await this.auth().createUser({
-      email: payload.email,
-      password: payload.password,
-      displayName: payload.name,
-    });
+    try {
+      const now = this.now();
+      const authUser = await this.auth().createUser({
+        email: payload.email,
+        password: payload.password,
+        displayName: payload.name,
+      });
 
-    const user: UserRecord = {
-      id: authUser.uid,
-      email: payload.email,
-      name: payload.name,
-      avatarLabel: this.buildAvatarLabel(payload.name),
-      createdAt: now,
-      updatedAt: now,
-    };
+      const user: UserRecord = {
+        id: authUser.uid,
+        email: payload.email,
+        name: payload.name,
+        avatarLabel: this.buildAvatarLabel(payload.name),
+        createdAt: now,
+        updatedAt: now,
+      };
 
-    const profile: ProfileRecord = {
-      id: randomUUID(),
-      userId: authUser.uid,
-      timezone: "America/Sao_Paulo",
-      language: "pt-BR",
-      energyPattern: "morning_peak",
-      workStyle: "deep_work",
-      studyStyle: "active_recall",
-      sleepSchedule: "23:00-07:00",
-      preferences: { onboardingCompleted: false },
-      createdAt: now,
-      updatedAt: now,
-    };
+      const profile: ProfileRecord = {
+        id: randomUUID(),
+        userId: authUser.uid,
+        timezone: "America/Sao_Paulo",
+        language: "pt-BR",
+        energyPattern: "morning_peak",
+        workStyle: "deep_work",
+        studyStyle: "active_recall",
+        sleepSchedule: "23:00-07:00",
+        preferences: { onboardingCompleted: false },
+        createdAt: now,
+        updatedAt: now,
+      };
 
-    await this.setDoc("users", user);
-    await this.setDoc("profiles", profile);
+      await this.setDoc("users", user);
+      await this.setDoc("profiles", profile);
 
-    return {
-      user,
-      profile,
-      message:
-        "Usuario criado no Firebase Auth e perfil salvo no Firestore. Use o token do Firebase no frontend para sessoes autenticadas.",
-    };
+      const result = {
+        user,
+        profile,
+        message:
+          "Usuario criado no Firebase Auth e perfil salvo no Firestore. Use o token do Firebase no frontend para sessoes autenticadas.",
+      };
+
+      try {
+        const session = await this.login({
+          email: payload.email,
+          password: payload.password,
+        });
+
+        return {
+          ...result,
+          accessToken: session.accessToken,
+          refreshToken: session.refreshToken,
+          expiresIn: session.expiresIn,
+        };
+      } catch {
+        return result;
+      }
+    } catch (error) {
+      if (
+        error instanceof UnauthorizedException ||
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException ||
+        error instanceof ConflictException
+      ) {
+        throw error;
+      }
+
+      throw this.normalizeFirebaseAuthError(error);
+    }
   }
 
   async login(payload: { email: string; password: string }) {
@@ -795,6 +897,69 @@ export class FirebaseDataService {
       expiresIn: string;
     };
 
+    const authUser = await this.auth().getUser(data.localId);
+    const profileName = authUser.displayName?.trim() || data.email.split("@")[0] || "Usuario";
+    await this.ensureUserProfileExists({
+      userId: data.localId,
+      email: data.email,
+      name: profileName,
+    });
+
+    const user = await this.getCurrentUser(data.localId);
+
+    return {
+      user,
+      accessToken: data.idToken,
+      refreshToken: data.refreshToken,
+      expiresIn: data.expiresIn,
+    };
+  }
+
+  async loginWithGoogle(credential: string) {
+    const apiKey = process.env.FIREBASE_WEB_API_KEY;
+    if (!apiKey) {
+      throw new UnauthorizedException(
+        "FIREBASE_WEB_API_KEY nao configurada. Login com Google exige a Web API Key do Firebase Auth.",
+      );
+    }
+
+    const response = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          postBody: `id_token=${encodeURIComponent(credential)}&providerId=google.com`,
+          requestUri: "http://localhost",
+          returnSecureToken: true,
+          returnIdpCredential: true,
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: { message?: string } };
+      throw new UnauthorizedException(error.error?.message ?? "Falha no login Google");
+    }
+
+    const data = (await response.json()) as {
+      localId: string;
+      email: string;
+      displayName?: string;
+      idToken: string;
+      refreshToken: string;
+      expiresIn: string;
+    };
+
+    const displayName = data.displayName?.trim() || data.email.split("@")[0] || "Usuario";
+    await this.ensureUserProfileExists({
+      userId: data.localId,
+      email: data.email,
+      name: displayName,
+    });
+
     const user = await this.getCurrentUser(data.localId);
 
     return {
@@ -812,6 +977,43 @@ export class FirebaseDataService {
       ...user,
       profile: profiles[0] ?? null,
     };
+  }
+
+  async updateCurrentProfile(
+    userId: string,
+    payload: Partial<
+      Pick<
+        ProfileRecord,
+        "timezone" | "language" | "energyPattern" | "workStyle" | "studyStyle" | "sleepSchedule"
+      >
+    > & { onboardingCompleted?: boolean },
+  ) {
+    const profiles = await this.listByField<ProfileRecord>("profiles", "userId", userId);
+    const profile = profiles[0];
+
+    if (!profile) {
+      throw new NotFoundException(`profile for user ${userId} not found`);
+    }
+
+    const preferences = {
+      ...(profile.preferences ?? {}),
+      ...(payload.onboardingCompleted !== undefined
+        ? { onboardingCompleted: payload.onboardingCompleted }
+        : {}),
+    };
+
+    await this.updateDoc<ProfileRecord>("profiles", profile.id, {
+      timezone: payload.timezone ?? profile.timezone,
+      language: payload.language ?? profile.language,
+      energyPattern: payload.energyPattern ?? profile.energyPattern,
+      workStyle: payload.workStyle ?? profile.workStyle,
+      studyStyle: payload.studyStyle ?? profile.studyStyle,
+      sleepSchedule: payload.sleepSchedule ?? profile.sleepSchedule,
+      preferences,
+      updatedAt: this.now(),
+    });
+
+    return this.getCurrentUser(userId);
   }
 
   async getGoals(userId: string) {

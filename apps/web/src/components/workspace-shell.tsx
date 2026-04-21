@@ -1,12 +1,45 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  DashboardIcon,
+  ExecutionIcon,
+  GoalsIcon,
+  HelpIcon,
+  HorusLogoMark,
+  LogoutIcon,
+  PlansIcon,
+  ReviewIcon,
+} from "./brand-assets";
+import { GoalsOperationsPanel } from "./goals-operations-panel";
+import { PlansOperationsPanel } from "./plans-operations-panel";
+import { TaskOperationsPanel } from "./task-operations-panel";
+import {
+  clearAuthSession,
+  clearDemoSession,
+  getClientAccessToken,
+  getStoredAuthUser,
+  storeAuthUser,
+  type StoredAuthUser,
+} from "../lib/auth-session";
+import { fetchCurrentUser } from "../services/horus-api";
 import { primaryNavigation, type WorkspaceData } from "../lib/workspace-data";
 
 type WorkspaceView = "dashboard" | "goals" | "plans" | "execution" | "review";
 
-function SidebarCard({
+const navigationIcons: Record<string, React.ReactNode> = {
+  "/": <DashboardIcon />,
+  "/goals": <GoalsIcon />,
+  "/plans": <PlansIcon />,
+  "/execution": <ExecutionIcon />,
+  "/review": <ReviewIcon />,
+};
+
+function SidebarSection({
   title,
   items,
 }: {
@@ -14,14 +47,14 @@ function SidebarCard({
   items: Array<string | { name: string; date: string; status: string } | { title: string; progress: string; percent: number }>;
 }) {
   return (
-    <section className="panel">
-      <div className="panel-title">{title}</div>
-      <div className="stack">
+    <section className="sidebar-section">
+      <div className="sidebar-section-title">{title}</div>
+      <div className="sidebar-list">
         {items.map((item) => {
           if (typeof item === "string") {
             return (
-              <div key={item} className="list-row">
-                <span className="list-bullet" />
+              <div key={item} className="sidebar-list-row">
+                <span className="sidebar-dot" />
                 <span>{item}</span>
               </div>
             );
@@ -29,23 +62,22 @@ function SidebarCard({
 
           if ("name" in item) {
             return (
-              <div key={item.name} className="event-row">
-                <div className="event-name">{item.name}</div>
-                <div className="event-date">{item.date}</div>
-                <div className="pill pill-muted">{item.status}</div>
-              </div>
+              <article key={item.name} className="sidebar-event-card">
+                <strong>{item.name}</strong>
+                <span>{item.date}</span>
+                <em>{item.status}</em>
+              </article>
             );
           }
 
           return (
-            <div key={item.title} className="reading-card">
-              <div className="reading-title">{item.title}</div>
-              <div className="reading-progress">{item.progress}</div>
-              <div className="reading-bar">
+            <article key={item.title} className="sidebar-reading-card">
+              <strong>{item.title}</strong>
+              <span>{item.progress}</span>
+              <div className="reading-progress-bar">
                 <span style={{ width: `${item.percent}%` }} />
               </div>
-              <div className="reading-percent">{item.percent}%</div>
-            </div>
+            </article>
           );
         })}
       </div>
@@ -53,282 +85,288 @@ function SidebarCard({
   );
 }
 
-function SectionHeader({ title, action }: { title: string; action?: string }) {
+function SectionBlock({
+  eyebrow,
+  title,
+  action,
+  children,
+}: {
+  eyebrow?: string;
+  title: string;
+  action?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="section-header">
-      <h2>{title}</h2>
-      {action ? <span>{action}</span> : null}
-    </div>
+    <section className="surface-card">
+      <div className="surface-card-head">
+        <div>
+          {eyebrow ? <div className="surface-eyebrow">{eyebrow}</div> : null}
+          <h2>{title}</h2>
+        </div>
+        {action ? <span className="surface-action">{action}</span> : null}
+      </div>
+      <div className="surface-card-body">{children}</div>
+    </section>
   );
 }
 
-function PlannerCalendar({ data }: { data: WorkspaceData }) {
+function CalendarBoard({ data }: { data: WorkspaceData }) {
   return (
-    <section className="section">
-      <SectionHeader title="Planner Calendar" action="Agenda organizada pelo agente e pelo workspace" />
-      <div className="calendar-planner">
-        <div className="planner-board">
-          {data.calendarDays.map((day) => (
-            <article key={`${day.label}-${day.date}`} className="planner-day">
-              <div className="planner-day-head">
+    <SectionBlock
+      eyebrow="Agenda GPT"
+      title="Calendario operacional"
+      action="Tarefas e blocos distribuidos automaticamente"
+    >
+      <div className="planner-grid">
+        {data.calendarDays.map((day) => (
+          <article key={`${day.label}-${day.date}`} className="planner-day-card">
+            <div className="planner-day-head">
+              <div>
                 <strong>{day.label}</strong>
                 <span>{day.date}</span>
               </div>
-              <div className="planner-day-focus">{day.focus}</div>
-              <div className="planner-items">
-                {day.items.length ? (
-                  day.items.map((item) => (
-                    <div key={item.id} className={`planner-item planner-item-${item.tone}`}>
-                      <div className="planner-item-time">{item.time}</div>
-                      <div className="planner-item-body">
-                        <strong>{item.title}</strong>
-                        <span>{item.track}</span>
-                      </div>
-                      <div className="planner-item-status">{item.status}</div>
+              <em>{day.focus}</em>
+            </div>
+            <div className="planner-day-items">
+              {day.items.length ? (
+                day.items.map((item) => (
+                  <div key={item.id} className={`planner-task planner-task-${item.tone}`}>
+                    <span className="planner-time">{item.time}</span>
+                    <div className="planner-task-copy">
+                      <strong>{item.title}</strong>
+                      <span>{item.track}</span>
                     </div>
-                  ))
-                ) : (
-                  <div className="planner-empty">Sem blocos confirmados</div>
-                )}
-              </div>
-            </article>
-          ))}
-        </div>
-
-        <aside className="planner-inbox">
-          <div className="planner-inbox-title">Agent Inbox</div>
-          <div className="stack">
-            {data.calendarInbox.map((item) => (
-              <article key={item.id} className="planner-inbox-card">
-                <strong>{item.title}</strong>
-                <p>{item.detail}</p>
-                <span>{item.source}</span>
-              </article>
-            ))}
-          </div>
-        </aside>
+                    <small>{item.status}</small>
+                  </div>
+                ))
+              ) : (
+                <div className="planner-empty-state">Sem blocos agendados</div>
+              )}
+            </div>
+          </article>
+        ))}
       </div>
-    </section>
+    </SectionBlock>
   );
 }
 
 function DashboardContent({ data }: { data: WorkspaceData }) {
   return (
     <>
-      <PlannerCalendar data={data} />
+      <section className="hero-panel">
+        <div className="hero-copy">
+          <div className="surface-eyebrow">Workspace overview</div>
+          <h1>Ultimate Student OS reimaginado para web</h1>
+          <p>
+            A mesma base do template anterior, agora distribuida como um sistema web mais claro,
+            com foco em leitura rapida, operacao diaria e calendario central.
+          </p>
+          <div className="quick-action-row">
+            {data.quickActions.slice(0, 4).map((item) => (
+              <button key={item} className="ghost-chip" type="button">
+                {item}
+              </button>
+            ))}
+          </div>
+        </div>
 
-      <section className="section">
-        <SectionHeader title="Classes" action="88 all" />
-        <div className="class-grid">
-          {data.classStats.map((item) => (
-            <article key={item.name} className="small-card">
-              <div className="small-card-title">{item.name}</div>
-              <div>{item.assignments} Assignments Left</div>
-              <div>{item.progress}%</div>
-              <div>{item.tasksLeft} Tasks Left</div>
-            </article>
-          ))}
+        <div className="hero-stats">
+          <article className="metric-panel">
+            <span>Objetivos ativos</span>
+            <strong>{data.goalCards.length}</strong>
+          </article>
+          <article className="metric-panel">
+            <span>Blocos no calendario</span>
+            <strong>{data.calendarDays.reduce((sum, day) => sum + day.items.length, 0)}</strong>
+          </article>
+          <article className="metric-panel">
+            <span>Sugestoes do agente</span>
+            <strong>{data.calendarInbox.length}</strong>
+          </article>
+          <article className="metric-panel">
+            <span>Materias monitoradas</span>
+            <strong>{data.classStats.length}</strong>
+          </article>
         </div>
       </section>
 
-      <section className="section">
-        <SectionHeader title="Timetable" action="Table" />
-        <div className="table-card">
-          <table>
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Mon</th>
-                <th>Tue</th>
-                <th>Wed</th>
-                <th>Thu</th>
-                <th>Fri</th>
-                <th>Sat</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.timetable.map((row) => (
-                <tr key={row.time}>
-                  {[row.time, row.mon, row.tue, row.wed, row.thu, row.fri, row.sat].map((value, index) => (
-                    <td key={`${row.time}-${index}`}>{value || "—"}</td>
-                  ))}
-                </tr>
+      <CalendarBoard data={data} />
+
+      <div className="content-grid-two">
+        <SectionBlock eyebrow="Performance" title="Classes e progresso" action="Acompanhamento atual">
+          <div className="class-card-grid">
+            {data.classStats.map((item) => (
+              <article key={item.name} className="mini-stat-card">
+                <strong>{item.name}</strong>
+                <span>{item.assignments} entregas em aberto</span>
+                <div className="metric-line">
+                  <em>{item.progress}%</em>
+                  <small>{item.tasksLeft} tarefas restantes</small>
+                </div>
+              </article>
+            ))}
+          </div>
+        </SectionBlock>
+
+        <SectionBlock eyebrow="Prioridades" title="Avaliacoes e prazos" action="Leitura rapida da semana">
+          <div className="deadline-grid">
+            {data.assessments.map((item) => (
+              <article key={`${item.title}-${item.subject}`} className="deadline-card">
+                <strong>{item.title}</strong>
+                <span>{item.subject}</span>
+                <small>{item.dueDate}</small>
+                <em>{item.daysLeft}</em>
+              </article>
+            ))}
+          </div>
+        </SectionBlock>
+      </div>
+
+      <div className="content-grid-two">
+        <SectionBlock eyebrow="Planejamento" title="Objetivos e direcao" action="Resumo visivel">
+          <div className="goal-card-grid">
+            {data.goalCards.map((goal) => (
+              <article key={goal.title} className="goal-spotlight-card">
+                <div className="goal-spotlight-head">
+                  <strong>{goal.title}</strong>
+                  <span>{goal.status}</span>
+                </div>
+                <p>{goal.detail}</p>
+                <div className="goal-progress-row">
+                  <small>Prioridade {goal.priority}</small>
+                  <strong>{goal.progress}%</strong>
+                </div>
+                <div className="reading-progress-bar">
+                  <span style={{ width: `${goal.progress}%` }} />
+                </div>
+              </article>
+            ))}
+          </div>
+        </SectionBlock>
+
+        <SectionBlock eyebrow="Base de apoio" title="Recursos e notas" action="Conhecimento acessivel">
+          <div className="knowledge-stack">
+            <div className="resource-card-list">
+              {data.resourceItems.slice(0, 3).map((item) => (
+                <article key={item.title} className="resource-modern-card">
+                  <strong>{item.title}</strong>
+                  <span>{item.source}</span>
+                  <div className="tag-row">
+                    <small>{item.tag}</small>
+                    <em>{item.status}</em>
+                  </div>
+                </article>
               ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="section">
-        <SectionHeader title="Upcoming Assessments" action="Exams" />
-        <div className="assessment-grid">
-          {data.assessments.map((item) => (
-            <article key={`${item.title}-${item.subject}`} className="assessment-card">
-              <div className="assessment-title">{item.title}</div>
-              <div>{item.subject}</div>
-              <div>{item.dueDate}</div>
-              <div className="assessment-accent">{item.daysLeft}</div>
-            </article>
-          ))}
-        </div>
-        <div className="table-card compact">
-          <table>
-            <thead>
-              <tr>
-                <th>Deadline</th>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Status</th>
-                <th>Courses</th>
-                <th>Due Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.assignmentsTable.map((item) => (
-                <tr key={item.name}>
-                  <td>{item.overdue}</td>
-                  <td>{item.name}</td>
-                  <td>{item.type}</td>
-                  <td>
-                    <span className={`pill ${item.status === "In progress" ? "pill-blue" : "pill-orange"}`}>
-                      {item.status}
-                    </span>
-                  </td>
-                  <td>{item.course}</td>
-                  <td>{item.dueDate}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="section">
-        <SectionHeader title="Tasks" action="Today · This Week · Overdue" />
-        <div className="table-card compact">
-          <table>
-            <thead>
-              <tr>
-                <th>Task</th>
-                <th>Date</th>
-                <th>Effort</th>
-                <th>Impact</th>
-                <th>Priority</th>
-                <th>Course</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.taskTable.map((item, index) => (
-                <tr key={`${item.name}-${index}`}>
-                  <td>{item.name}</td>
-                  <td>{item.date}</td>
-                  <td><span className="pill pill-muted">{item.effort}</span></td>
-                  <td><span className="pill pill-muted">{item.impact}</span></td>
-                  <td>{"★".repeat(item.priority)}</td>
-                  <td>{item.course}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="section">
-        <SectionHeader title="Flashcard Repetition" action="Today · All Decks" />
-        <div className="single-line-card">
-          <div>Biology Chapter 1 Flashcards</div>
-          <div className="single-line-meta">August 31, 2026 · Biology · Overdue</div>
-        </div>
-      </section>
-
-      <section className="section">
-        <SectionHeader title="Resources" action="Recent · Favourite" />
-        <div className="resource-list">
-          {data.resourceItems.map((item) => (
-            <div key={item.title} className="resource-row">
-              <div>
-                <div className="resource-title">{item.title}</div>
-                <div className="resource-source">{item.source}</div>
-              </div>
-              <div className="resource-meta">
-                <span className="pill pill-muted">{item.tag}</span>
-                <span className="pill">{item.status}</span>
-              </div>
             </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="section">
-        <SectionHeader title="Notes" action="Recent · Fav" />
-        <div className="notes-grid">
-          {data.notes.map((note) => (
-            <article key={note.title} className="note-card">
-              <h3>{note.title}</h3>
-              <p>{note.excerpt}</p>
-              <div className="note-footer">
-                <span>{note.category}</span>
-                <span>{note.date}</span>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
+            <div className="note-modern-grid">
+              {data.notes.slice(0, 2).map((note) => (
+                <article key={note.title} className="note-modern-card">
+                  <strong>{note.title}</strong>
+                  <p>{note.excerpt}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </SectionBlock>
+      </div>
     </>
   );
 }
 
 function GoalsContent({ data }: { data: WorkspaceData }) {
   return (
-    <section className="section">
-      <SectionHeader title="Objetivos" action="Novo objetivo" />
-      <div className="goal-grid">
-        {data.goalCards.map((goal) => (
-          <article key={goal.title} className="focus-card">
-            <div className="focus-card-head">
-              <h3>{goal.title}</h3>
-              <span className="pill pill-muted">{goal.status}</span>
-            </div>
-            <p>{goal.detail}</p>
-            <div className="metrics-row">
-              <span>Prioridade {goal.priority}</span>
-              <span>{goal.progress}%</span>
-            </div>
-            <div className="progress-bar">
-              <span style={{ width: `${goal.progress}%` }} />
-            </div>
-          </article>
-        ))}
+    <>
+      <GoalsOperationsPanel />
+      <SectionBlock eyebrow="Goals hub" title="Objetivos em destaque" action="Panorama de execucao">
+        <div className="goal-card-grid">
+          {data.goalCards.map((goal) => (
+            <article key={goal.title} className="goal-spotlight-card">
+              <div className="goal-spotlight-head">
+                <strong>{goal.title}</strong>
+                <span>{goal.status}</span>
+              </div>
+              <p>{goal.detail}</p>
+              <div className="goal-progress-row">
+                <small>Prioridade {goal.priority}</small>
+                <strong>{goal.progress}%</strong>
+              </div>
+              <div className="reading-progress-bar">
+                <span style={{ width: `${goal.progress}%` }} />
+              </div>
+            </article>
+          ))}
+        </div>
+      </SectionBlock>
+
+      <div className="content-grid-two">
+        <CalendarBoard data={data} />
+        <SectionBlock eyebrow="Guidance" title="Recomendacoes atuais" action="Leitura clara">
+          <div className="stacked-insights">
+            {data.recommendations.map((item) => (
+              <div key={item} className="insight-row">
+                <span className="sidebar-dot" />
+                <span>{item}</span>
+              </div>
+            ))}
+          </div>
+        </SectionBlock>
       </div>
-    </section>
+    </>
   );
 }
 
 function PlansContent({ data }: { data: WorkspaceData }) {
   return (
     <>
-      <PlannerCalendar data={data} />
-      <section className="section">
-        <SectionHeader title="Plano" action="Versao 3 · semanal · origem agente" />
-        <div className="goal-grid">
-          {data.planOverview.map((plan) => (
-            <article key={plan.title} className="focus-card">
-              <div className="focus-card-head">
-                <h3>{plan.title}</h3>
-                <span className="pill pill-muted">{plan.meta}</span>
-              </div>
-              <div className="stack">
-                {plan.items.map((item) => (
-                  <div key={item} className="list-row">
-                    <span className="list-bullet" />
-                    <span>{item}</span>
-                  </div>
+      <PlansOperationsPanel />
+      <CalendarBoard data={data} />
+      <div className="content-grid-two">
+        <SectionBlock eyebrow="Plan map" title="Estrutura do plano" action="Versoes e rotinas">
+          <div className="plan-flow">
+            {data.planOverview.map((plan) => (
+              <article key={plan.title} className="plan-flow-card">
+                <strong>{plan.title}</strong>
+                <span>{plan.meta}</span>
+                <div className="stacked-insights">
+                  {plan.items.map((item) => (
+                    <div key={item} className="insight-row">
+                      <span className="sidebar-dot" />
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
+        </SectionBlock>
+
+        <SectionBlock eyebrow="Task list" title="Itens distribuidos" action="Base para o calendario">
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tarefa</th>
+                  <th>Data</th>
+                  <th>Esforco</th>
+                  <th>Impacto</th>
+                  <th>Curso</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.taskTable.map((item, index) => (
+                  <tr key={`${item.name}-${index}`}>
+                    <td>{item.name}</td>
+                    <td>{item.date}</td>
+                    <td>{item.effort}</td>
+                    <td>{item.impact}</td>
+                    <td>{item.course}</td>
+                  </tr>
                 ))}
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
+              </tbody>
+            </table>
+          </div>
+        </SectionBlock>
+      </div>
     </>
   );
 }
@@ -336,32 +374,41 @@ function PlansContent({ data }: { data: WorkspaceData }) {
 function ExecutionContent({ data }: { data: WorkspaceData }) {
   return (
     <>
-      <PlannerCalendar data={data} />
-      <section className="section">
-        <SectionHeader title="Execucao diaria" action="Start · Pause · Complete · Blocked" />
-        <div className="goal-grid">
-          <article className="focus-card">
-            <div className="focus-card-head">
-              <h3>Controle operacional do dia</h3>
-              <span className="pill pill-blue">Live</span>
-            </div>
-            <div className="execution-grid">
-              {data.executionSteps.map((item) => (
-                <div key={item.label} className="execution-item">
-                  <span>{item.label}</span>
-                  <strong>{item.value}</strong>
+      <TaskOperationsPanel />
+      <CalendarBoard data={data} />
+      <div className="content-grid-two">
+        <SectionBlock eyebrow="Execution" title="Estado operacional atual" action="Bloco do momento">
+          <div className="execution-card-grid">
+            {data.executionSteps.map((item) => (
+              <article key={item.label} className="mini-stat-card">
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </article>
+            ))}
+          </div>
+          <div className="quick-action-row">
+            <button className="ghost-chip" type="button">Iniciar</button>
+            <button className="ghost-chip" type="button">Pausar</button>
+            <button className="ghost-chip" type="button">Concluir</button>
+            <button className="ghost-chip" type="button">Bloqueada</button>
+          </div>
+        </SectionBlock>
+
+        <SectionBlock eyebrow="Week flow" title="Fila de trabalho" action="Tarefas organizadas">
+          <div className="task-list-modern">
+            {data.taskTable.map((item, index) => (
+              <article key={`${item.name}-${index}`} className="task-list-card">
+                <strong>{item.name}</strong>
+                <span>{item.course}</span>
+                <div className="tag-row">
+                  <small>{item.effort}</small>
+                  <em>{item.date}</em>
                 </div>
-              ))}
-            </div>
-            <div className="action-row">
-              <button>Iniciar</button>
-              <button>Pausar</button>
-              <button>Concluir</button>
-              <button>Bloqueada</button>
-            </div>
-          </article>
-        </div>
-      </section>
+              </article>
+            ))}
+          </div>
+        </SectionBlock>
+      </div>
     </>
   );
 }
@@ -369,67 +416,75 @@ function ExecutionContent({ data }: { data: WorkspaceData }) {
 function ReviewContent({ data }: { data: WorkspaceData }) {
   return (
     <>
-      <section className="section">
-        <SectionHeader title="Revisao semanal" action="Semana 15" />
-        <div className="review-grid">
+      <SectionBlock eyebrow="Review" title="Indicadores da semana" action="Leitura imediata">
+        <div className="hero-stats">
           {data.reviewMetrics.map((metric) => (
-            <article key={metric.label} className="metric-card">
+            <article key={metric.label} className="metric-panel">
               <span>{metric.label}</span>
               <strong>{metric.value}</strong>
             </article>
           ))}
         </div>
-      </section>
+      </SectionBlock>
 
-      <section className="section dual-section">
-        <article className="focus-card">
-          <div className="focus-card-head">
-            <h3>Gargalos</h3>
-          </div>
-          <div className="stack">
+      <div className="content-grid-two">
+        <SectionBlock eyebrow="Friction" title="Gargalos recorrentes" action="Pontos de atencao">
+          <div className="stacked-insights">
             {data.weeklyBottlenecks.map((item) => (
-              <div key={item} className="list-row">
-                <span className="list-bullet" />
+              <div key={item} className="insight-row">
+                <span className="sidebar-dot" />
                 <span>{item}</span>
               </div>
             ))}
           </div>
-        </article>
+        </SectionBlock>
 
-        <article className="focus-card">
-          <div className="focus-card-head">
-            <h3>Recomendacoes</h3>
-          </div>
-          <div className="stack">
+        <SectionBlock eyebrow="Agent notes" title="Recomendacoes do agente" action="Ajustes sugeridos">
+          <div className="stacked-insights">
             {data.recommendations.map((item) => (
-              <div key={item} className="list-row">
-                <span className="list-bullet" />
+              <div key={item} className="insight-row">
+                <span className="sidebar-dot" />
                 <span>{item}</span>
               </div>
             ))}
           </div>
-        </article>
-      </section>
+        </SectionBlock>
+      </div>
     </>
   );
 }
 
-function getTitle(view: WorkspaceView) {
+function getViewMeta(view: WorkspaceView) {
   switch (view) {
     case "goals":
-      return "Goals Workspace";
+      return {
+        title: "Objetivos",
+        subtitle: "Metas ativas, progresso e clareza de direcao.",
+      };
     case "plans":
-      return "Plan Workspace";
+      return {
+        title: "Planos",
+        subtitle: "Estrutura semanal, rotinas e blocos distribuidos.",
+      };
     case "execution":
-      return "Execution Workspace";
+      return {
+        title: "Execucao",
+        subtitle: "Controle do dia, foco atual e fila operacional.",
+      };
     case "review":
-      return "Review Workspace";
+      return {
+        title: "Revisao",
+        subtitle: "Metricas, gargalos e recomendacoes para a proxima semana.",
+      };
     default:
-      return "Ultimate Student OS (Brown)";
+      return {
+        title: "Dashboard",
+        subtitle: "Visao central da rotina, calendario e contexto do agente.",
+      };
   }
 }
 
-function renderContent(view: WorkspaceView, data: WorkspaceData) {
+function renderView(view: WorkspaceView, data: WorkspaceData) {
   switch (view) {
     case "goals":
       return <GoalsContent data={data} />;
@@ -445,114 +500,197 @@ function renderContent(view: WorkspaceView, data: WorkspaceData) {
 }
 
 export function WorkspaceShell({ view, data }: { view: WorkspaceView; data: WorkspaceData }) {
+  const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [currentUser, setCurrentUser] = useState<StoredAuthUser | null>(() => getStoredAuthUser());
+  const meta = getViewMeta(view);
+
+  useEffect(() => {
+    const token = getClientAccessToken();
+    if (!token) {
+      setCurrentUser(null);
+      return;
+    }
+
+    fetchCurrentUser()
+      .then((user) => {
+        const stored = {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          avatarLabel: user.avatarLabel,
+        };
+        setCurrentUser(stored);
+        storeAuthUser(stored);
+      })
+      .catch(() => {
+        clearAuthSession();
+        setCurrentUser(null);
+      });
+  }, []);
+
+  function handleLogout() {
+    clearAuthSession();
+    clearDemoSession();
+    setCurrentUser(null);
+    router.push("/login");
+    router.refresh();
+  }
 
   return (
     <main className="page-shell">
-      <div className={`workspace ${sidebarOpen ? "sidebar-open" : "sidebar-collapsed"}`}>
-        <header className="hero" />
-
-        <div className="workspace-grid">
-          <aside className={`sidebar ${sidebarOpen ? "is-open" : "is-hidden"}`}>
-            <div className="brand-mark">
+      <div className={`dashboard-shell ${sidebarOpen ? "sidebar-visible" : "sidebar-hidden"}`}>
+        <aside className={`dashboard-sidebar ${sidebarOpen ? "is-expanded" : "is-collapsed"}`}>
+          <div className="sidebar-brand">
+            <div className="sidebar-brand-header">
+              <div className="sidebar-brand-identity">
+                <div className="sidebar-brand-mark">
+                  <HorusLogoMark />
+                </div>
+                <div className={`sidebar-brand-copy ${sidebarOpen ? "is-visible" : "is-hidden"}`}>
+                  <strong>Horus Planner</strong>
+                  <span>Eye on focus, plans and execution</span>
+                </div>
+              </div>
               <button
                 type="button"
-                className="sidebar-toggle sidebar-toggle-inline"
+                className="sidebar-chevron"
                 onClick={() => setSidebarOpen((current) => !current)}
-                aria-label={sidebarOpen ? "Ocultar sidebar" : "Mostrar sidebar"}
+                aria-label={sidebarOpen ? "Ocultar menu lateral" : "Mostrar menu lateral"}
+                aria-expanded={sidebarOpen}
               >
-                {sidebarOpen ? "Ocultar" : "Mostrar"}
+                {sidebarOpen ? <ChevronLeftIcon /> : <ChevronRightIcon />}
               </button>
-              <span className="brand-icon" />
-              <span>Horus Planner</span>
             </div>
-            <div className="sidebar-scroll">
-              <SidebarCard title="Quick Actions" items={data.quickActions} />
-              <SidebarCard title="Management" items={data.managementLinks} />
-              <SidebarCard title="Directory" items={data.directoryLinks} />
-              <SidebarCard title="Trackers" items={data.trackerLinks} />
+          </div>
 
-              <section className="panel player-card">
-                <div className="panel-title">Dreamy Brown Noise</div>
-                <div className="player-surface">
-                  <div>Brown noise</div>
-                  <div>Focus mode</div>
-                  <div>56 min session</div>
+          <nav className="sidebar-navigation">
+            {primaryNavigation.map((item) => {
+              const isActive =
+                (view === "dashboard" && item.href === "/") ||
+                (view !== "dashboard" && item.href === `/${view}`);
+
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={isActive ? "active" : ""}
+                  title={!sidebarOpen ? item.label : undefined}
+                >
+                  <span className="sidebar-nav-icon">{navigationIcons[item.href] ?? <DashboardIcon />}</span>
+                  <span className={`sidebar-nav-label ${sidebarOpen ? "is-visible" : "is-hidden"}`}>
+                    {item.label}
+                  </span>
+                </Link>
+              );
+            })}
+          </nav>
+
+          <div className={`sidebar-scroll ${sidebarOpen ? "is-visible" : "is-hidden"}`}>
+            <SidebarSection title="Quick Actions" items={data.quickActions} />
+            <SidebarSection title="Management" items={data.managementLinks} />
+            <SidebarSection title="Agenda" items={data.agendaEvents} />
+            <SidebarSection title="Currently Reading" items={data.readingList} />
+          </div>
+
+          <div className={`sidebar-footer ${sidebarOpen ? "is-visible" : "is-hidden"}`}>
+            <button type="button" className="sidebar-footer-action">
+              <HelpIcon />
+              <span>Help</span>
+            </button>
+            {currentUser ? (
+              <button type="button" className="sidebar-footer-action" onClick={handleLogout}>
+                <LogoutIcon />
+                <span>Log out</span>
+              </button>
+            ) : (
+              <button type="button" className="sidebar-footer-action" onClick={() => router.push("/login")}>
+                <LogoutIcon />
+                <span>Entrar</span>
+              </button>
+            )}
+          </div>
+        </aside>
+
+        <div className="dashboard-main">
+          <header className="topbar-surface">
+            <div className="topbar-copy">
+              <div className="surface-eyebrow">Workspace</div>
+              <h1>{meta.title}</h1>
+              <p>{meta.subtitle}</p>
+              <div className="topbar-session">
+                <span className="status-chip">
+                  {currentUser ? "Conta conectada" : "Modo demonstracao"}
+                </span>
+                <span className="topbar-session-copy">
+                  {currentUser ? `${currentUser.name} · ${currentUser.email}` : "Entre para salvar seu workspace pessoal"}
+                </span>
+                <div className="topbar-session-actions">
+                  {currentUser ? (
+                    <button type="button" className="ghost-chip" onClick={handleLogout}>
+                      Sair
+                    </button>
+                  ) : (
+                    <>
+                      <Link href="/login" className="ghost-chip">
+                        Entrar
+                      </Link>
+                      <Link href="/register" className="ghost-chip">
+                        Criar conta
+                      </Link>
+                    </>
+                  )}
                 </div>
-              </section>
-
-              <SidebarCard title="Agenda Events" items={data.agendaEvents} />
-              <SidebarCard title="Habit Journal" items={data.habits} />
-              <SidebarCard title="Currently Reading" items={data.readingList} />
+              </div>
             </div>
-          </aside>
+          </header>
 
-          <section className="content">
-            <div className="title-block">
-              <div className="title-group">
-                <div className="toolbar-row">
-                  <button
-                    type="button"
-                    className="sidebar-toggle"
-                    onClick={() => setSidebarOpen((current) => !current)}
-                    aria-label={sidebarOpen ? "Ocultar sidebar" : "Mostrar sidebar"}
-                  >
-                    {sidebarOpen ? "Recolher menu" : "Abrir menu"}
-                  </button>
-                  <span className="toolbar-note">Main ajustado para ocupar toda a area util da pagina.</span>
+          <div className="dashboard-layout">
+            <section className="dashboard-primary">{renderView(view, data)}</section>
+
+            <aside className="dashboard-secondary">
+              <SectionBlock eyebrow="Agora" title="Foco do momento" action="Estado atual">
+                <div className="secondary-stack">
+                  {data.executionSteps.map((item) => (
+                    <div key={item.label} className="secondary-row">
+                      <span>{item.label}</span>
+                      <strong>{item.value}</strong>
+                    </div>
+                  ))}
                 </div>
-                <h1>{getTitle(view)}</h1>
-              </div>
-              <nav className="top-nav">
-                {primaryNavigation.map((item) => {
-                  const isActive =
-                    (view === "dashboard" && item.href === "/") ||
-                    (view !== "dashboard" && item.href === `/${view}`);
+              </SectionBlock>
 
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      className={isActive ? "active" : ""}
-                    >
-                      {item.label}
-                    </Link>
-                  );
-                })}
-              </nav>
-            </div>
-
-            {renderContent(view, data)}
-          </section>
-
-          <aside className="utility">
-            <section className="calendar-widget">
-              <div className="calendar-numbers">
-                <div>
-                  <strong>01</strong>
-                  <span>PM</span>
+              <SectionBlock eyebrow="Agent queue" title="Inbox operacional" action="Entradas priorizadas">
+                <div className="secondary-stack">
+                  {data.calendarInbox.map((item) => (
+                    <article key={item.id} className="secondary-note-card">
+                      <strong>{item.title}</strong>
+                      <p>{item.detail}</p>
+                      <span>{item.source}</span>
+                    </article>
+                  ))}
                 </div>
-                <div>
-                  <strong>12</strong>
-                  <span>Sunday</span>
-                </div>
-              </div>
-            </section>
+              </SectionBlock>
 
-            <section className="timer-widget">
-              <div className="timer-modes">
-                <span>Pomodoro</span>
-                <span>Short Break</span>
-                <span>Long Break</span>
-              </div>
-              <div className="timer-value">25:00</div>
-              <button>Start</button>
-              <div className="timer-footer">
-                <span>Mode</span>
-                <span>Setup</span>
-              </div>
-            </section>
-          </aside>
+              <SectionBlock eyebrow="Habitos" title="Checklist diario" action="Consistencia">
+                <div className="secondary-stack">
+                  {data.habits.slice(0, 6).map((item) => (
+                    <div key={item} className="insight-row">
+                      <span className="sidebar-dot" />
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              </SectionBlock>
+
+              <SectionBlock eyebrow="Pomodoro" title="Timer de foco" action="Ciclo atual">
+                <div className="focus-timer-card">
+                  <strong>25:00</strong>
+                  <span>Start · Short Break · Long Break</span>
+                </div>
+              </SectionBlock>
+            </aside>
+          </div>
         </div>
       </div>
     </main>

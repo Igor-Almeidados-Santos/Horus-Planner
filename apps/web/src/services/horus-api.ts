@@ -1,31 +1,347 @@
 import { defaultWorkspaceData, type WorkspaceData } from "../lib/workspace-data";
+import { getClientAccessToken } from "../lib/auth-session";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
-export async function fetchDashboardToday() {
-  const response = await fetch(`${API_URL}/api/dashboard/today`, {
+export type TaskStatus =
+  | "TODO"
+  | "IN_PROGRESS"
+  | "PAUSED"
+  | "BLOCKED"
+  | "DONE"
+  | "CANCELED"
+  | "ARCHIVED";
+
+export type GoalStatus = "DRAFT" | "ACTIVE" | "PAUSED" | "COMPLETED" | "ARCHIVED";
+
+export type AuthUser = {
+  id: string;
+  email: string;
+  name: string;
+  avatarLabel?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  profile?: {
+    id: string;
+    timezone: string;
+    language: string;
+    energyPattern: string;
+    workStyle: string;
+    studyStyle?: string;
+    sleepSchedule?: string;
+    preferences?: {
+      onboardingCompleted?: boolean;
+    };
+  } | null;
+};
+
+export type TaskRecord = {
+  id: string;
+  planId: string;
+  routineId?: string;
+  title: string;
+  description: string;
+  category: string;
+  priority: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  difficulty: "VERY_LOW" | "LOW" | "MEDIUM" | "HIGH" | "VERY_HIGH";
+  status: TaskStatus;
+  estimatedMinutes: number;
+  scheduledDate: string;
+  dueDate: string;
+  subject: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PlanSummary = {
+  id: string;
+  title: string;
+  status: "DRAFT" | "ACTIVE" | "PAUSED" | "ARCHIVED";
+  version: number;
+  routinesCount: number;
+  tasksCount: number;
+};
+
+export type GoalRecord = {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  priority: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  status: GoalStatus;
+  progress: number;
+  targetDate: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ExecutionLog = {
+  id: string;
+  taskId: string;
+  status: TaskStatus;
+  actualMinutes: number;
+  focusScore: number;
+  notes?: string;
+  startedAt?: string;
+  endedAt?: string;
+  createdAt: string;
+};
+
+export type CreateTaskInput = {
+  planId: string;
+  routineId?: string;
+  title: string;
+  description: string;
+  category: string;
+  priority: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  difficulty: "VERY_LOW" | "LOW" | "MEDIUM" | "HIGH" | "VERY_HIGH";
+  status: TaskStatus;
+  estimatedMinutes: number;
+  scheduledDate: string;
+  dueDate: string;
+  subject: string;
+};
+
+export type CreateGoalInput = {
+  title: string;
+  description: string;
+  category: string;
+  priority: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  status: GoalStatus;
+  progress?: number;
+  targetDate: string;
+};
+
+export type UpdateGoalInput = Partial<CreateGoalInput>;
+
+export type CreatePlanInput = {
+  goalId?: string;
+  title: string;
+  description: string;
+  status: "DRAFT" | "ACTIVE" | "PAUSED" | "ARCHIVED";
+  planningHorizon: string;
+  source: string;
+  createdByAgent: boolean;
+};
+
+export type LoginInput = {
+  email: string;
+  password: string;
+};
+
+export type RegisterInput = {
+  name: string;
+  email: string;
+  password: string;
+};
+
+export type UpdateProfileInput = {
+  timezone?: string;
+  language?: string;
+  energyPattern?: string;
+  workStyle?: string;
+  studyStyle?: string;
+  sleepSchedule?: string;
+  onboardingCompleted?: boolean;
+};
+
+export type LoginResponse = {
+  user: AuthUser;
+  accessToken: string;
+  refreshToken: string;
+  expiresIn: string;
+};
+
+export type RegisterResponse =
+  | {
+      user: AuthUser;
+      profile: AuthUser["profile"];
+      message: string;
+    }
+  | (LoginResponse & {
+      profile: AuthUser["profile"];
+      message: string;
+    });
+
+export class ApiError extends Error {
+  status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+type ApiRequestOptions = RequestInit & {
+  auth?: boolean;
+  token?: string | null;
+};
+
+async function apiRequest<T>(path: string, init?: ApiRequestOptions): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  if (init?.auth !== false) {
+    const token = init?.token ?? getClientAccessToken();
+    if (token) {
+      headers.set("Authorization", `Bearer ${token}`);
+    }
+  }
+
+  const response = await fetch(`${API_URL}${path}`, {
     cache: "no-store",
+    ...init,
+    headers,
   });
 
   if (!response.ok) {
-    throw new Error("Failed to fetch dashboard data");
-  }
+    let message = `Request failed for ${path}`;
 
-  return response.json();
-}
-
-export async function fetchWorkspaceData(): Promise<WorkspaceData> {
-  try {
-    const response = await fetch(`${API_URL}/api/dashboard/workspace`, {
-      cache: "no-store",
-    });
-
-    if (!response.ok) {
-      return defaultWorkspaceData;
+    try {
+      const payload = (await response.json()) as { message?: string | string[]; error?: string };
+      if (Array.isArray(payload.message)) {
+        message = payload.message.join(", ");
+      } else if (typeof payload.message === "string") {
+        message = payload.message;
+      } else if (typeof payload.error === "string") {
+        message = payload.error;
+      }
+    } catch {
+      // ignore JSON parsing errors and keep fallback message
     }
 
-    return (await response.json()) as WorkspaceData;
+    throw new ApiError(message, response.status);
+  }
+
+  return (await response.json()) as T;
+}
+
+export async function fetchDashboardToday() {
+  return apiRequest("/api/dashboard/today");
+}
+
+export async function fetchWorkspaceData(token?: string | null): Promise<WorkspaceData> {
+  try {
+    return await apiRequest<WorkspaceData>("/api/dashboard/workspace", {
+      token,
+      auth: true,
+    });
   } catch {
     return defaultWorkspaceData;
   }
+}
+
+export function loginWithPassword(payload: LoginInput) {
+  return apiRequest<LoginResponse>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    auth: false,
+  });
+}
+
+export function loginWithGoogleCredential(credential: string) {
+  return apiRequest<LoginResponse>("/api/auth/google", {
+    method: "POST",
+    body: JSON.stringify({ credential }),
+    auth: false,
+  });
+}
+
+export function registerAccount(payload: RegisterInput) {
+  return apiRequest<RegisterResponse>("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    auth: false,
+  });
+}
+
+export function fetchCurrentUser() {
+  return apiRequest<AuthUser>("/api/auth/me");
+}
+
+export function updateCurrentProfile(payload: UpdateProfileInput) {
+  return apiRequest<AuthUser>("/api/auth/profile", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function fetchTasks() {
+  return apiRequest<TaskRecord[]>("/api/tasks");
+}
+
+export function fetchGoals() {
+  return apiRequest<GoalRecord[]>("/api/goals");
+}
+
+export function fetchPlans() {
+  return apiRequest<PlanSummary[]>("/api/plans");
+}
+
+export function fetchExecutionsToday() {
+  return apiRequest<ExecutionLog[]>("/api/executions/today");
+}
+
+export function createTask(payload: CreateTaskInput) {
+  return apiRequest<TaskRecord>("/api/tasks", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createGoal(payload: CreateGoalInput) {
+  return apiRequest<GoalRecord>("/api/goals", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateGoal(id: string, payload: UpdateGoalInput) {
+  return apiRequest<GoalRecord>(`/api/goals/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createPlan(payload: CreatePlanInput) {
+  return apiRequest<PlanSummary>("/api/plans", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function activatePlan(id: string) {
+  return apiRequest<PlanSummary>(`/api/plans/${id}/activate`, {
+    method: "POST",
+  });
+}
+
+export function archivePlan(id: string) {
+  return apiRequest<PlanSummary>(`/api/plans/${id}/archive`, {
+    method: "POST",
+  });
+}
+
+export function updateTaskStatus(id: string, status: TaskStatus) {
+  return apiRequest<TaskRecord>(`/api/tasks/${id}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
+
+export function startExecution(taskId: string, notes?: string) {
+  return apiRequest<ExecutionLog>("/api/executions/start", {
+    method: "POST",
+    body: JSON.stringify({ taskId, notes }),
+  });
+}
+
+export function stopExecution(taskId: string, actualMinutes: number, notes?: string) {
+  return apiRequest<ExecutionLog>("/api/executions/stop", {
+    method: "POST",
+    body: JSON.stringify({ taskId, actualMinutes, notes }),
+  });
 }
