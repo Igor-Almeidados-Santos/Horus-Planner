@@ -114,7 +114,21 @@ export function AuthFormPanel({ mode, nextRoute = "/" }: { mode: AuthMode; nextR
         return "A Web API Key do Firebase nao foi configurada corretamente no backend.";
       }
 
+      if (error.message.includes("NETWORK_ERROR")) {
+        return "Nao foi possivel conectar ao backend agora. Confirme se a API e o frontend estao rodando localmente.";
+      }
+
       return error.message;
+    }
+
+    if (error instanceof Error && error.message) {
+      if (error.message.includes("Failed to fetch") || error.message.includes("fetch failed")) {
+        return "Nao foi possivel conectar ao backend agora. Confirme se a API e o frontend estao rodando localmente.";
+      }
+    }
+
+    if (typeof Event !== "undefined" && error instanceof Event) {
+      return "Nao foi possivel carregar um recurso externo necessario para autenticacao. Tente novamente em instantes.";
     }
 
     return fallback;

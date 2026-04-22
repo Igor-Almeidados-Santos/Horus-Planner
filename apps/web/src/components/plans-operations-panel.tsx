@@ -1,6 +1,7 @@
 "use client";
 
 import { startTransition, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import {
   activatePlan,
   archivePlan,
@@ -29,6 +30,7 @@ const initialPlanForm: PlanFormState = {
 };
 
 export function PlansOperationsPanel() {
+  const router = useRouter();
   const [plans, setPlans] = useState<PlanSummary[]>([]);
   const [form, setForm] = useState<PlanFormState>(initialPlanForm);
   const [isBusy, setIsBusy] = useState(false);
@@ -88,6 +90,7 @@ export function PlansOperationsPanel() {
         setFeedback("Plano criado e pronto para ativacao.");
         setForm(initialPlanForm);
         await refreshPlans();
+        router.refresh();
       })
       .catch(() => {
         setError("Nao foi possivel criar o plano.");
@@ -110,6 +113,7 @@ export function PlansOperationsPanel() {
             : `Plano "${plan.title}" arquivado.`,
         );
         await refreshPlans();
+        router.refresh();
       })
       .catch(() => {
         setError("Nao foi possivel atualizar esse plano.");

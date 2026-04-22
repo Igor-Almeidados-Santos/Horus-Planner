@@ -839,6 +839,10 @@ th {
   align-items: start;
 }
 
+.agent-operations-grid {
+  grid-template-columns: minmax(320px, 0.95fr) minmax(0, 1.05fr);
+}
+
 .task-quick-form {
   padding: 16px;
   border: 1px solid var(--line);
@@ -874,7 +878,7 @@ th {
 
 .task-quick-form-row {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 12px;
 }
 
@@ -927,6 +931,131 @@ th {
 .execution-log-panel {
   display: grid;
   gap: 12px;
+}
+
+.review-recommendation-card {
+  padding: 14px;
+  border: 1px solid rgba(255, 235, 214, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.agent-routine-list {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-routine-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(255, 235, 214, 0.1);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.agent-routine-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-routine-head span {
+  color: var(--muted);
+  text-transform: capitalize;
+}
+
+.agent-context-grid {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 235, 214, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.agent-chat-log {
+  display: grid;
+  gap: 14px;
+}
+
+.agent-chat-entry {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-chat-bubble {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 235, 214, 0.1);
+}
+
+.agent-chat-bubble strong {
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-chat-bubble p {
+  margin: 0;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.agent-chat-bubble span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.agent-chat-bubble.user {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.agent-chat-bubble.assistant {
+  background: linear-gradient(135deg, rgba(228, 190, 153, 0.12), rgba(133, 92, 70, 0.08));
+  border-color: rgba(228, 190, 153, 0.18);
+}
+
+.agent-replan-form {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-replan-form label {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-replan-form label span {
+  color: var(--muted);
+}
+
+.agent-replan-form textarea {
+  width: 100%;
+  min-height: 92px;
+  padding: 12px;
+  border: 1px solid rgba(255, 235, 214, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  resize: vertical;
+}
+
+.agent-replan-form button {
+  min-height: 42px;
+  border: 1px solid rgba(255, 224, 194, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.agent-replan-form button:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 .operations-goal-description {
@@ -1032,6 +1161,30 @@ th {
 
 .goal-status-archived,
 .plan-status-archived {
+  color: #d5cdc4;
+  background: rgba(132, 116, 100, 0.16);
+  border-color: rgba(195, 182, 166, 0.14);
+}
+
+.recommendation-status-open {
+  color: #ead3bd;
+  background: rgba(255, 235, 214, 0.07);
+  border-color: rgba(255, 235, 214, 0.12);
+}
+
+.recommendation-status-applied {
+  color: #cce7d2;
+  background: rgba(67, 119, 84, 0.24);
+  border-color: rgba(148, 210, 164, 0.24);
+}
+
+.recommendation-status-dismissed {
+  color: #f1d7b3;
+  background: rgba(150, 111, 69, 0.22);
+  border-color: rgba(223, 183, 136, 0.22);
+}
+
+.recommendation-status-archived {
   color: #d5cdc4;
   background: rgba(132, 116, 100, 0.16);
   border-color: rgba(195, 182, 166, 0.14);

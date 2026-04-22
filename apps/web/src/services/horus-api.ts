@@ -47,6 +47,7 @@ export type TaskRecord = {
   status: TaskStatus;
   estimatedMinutes: number;
   scheduledDate: string;
+  scheduledTime?: string;
   dueDate: string;
   subject: string;
   createdAt: string;
@@ -62,6 +63,17 @@ export type PlanSummary = {
   tasksCount: number;
 };
 
+export type RoutineRecord = {
+  id: string;
+  planId: string;
+  name: string;
+  description: string;
+  frequencyType: string;
+  timePreference: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type GoalRecord = {
   id: string;
   title: string;
@@ -73,6 +85,26 @@ export type GoalRecord = {
   targetDate: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ReviewRecord = {
+  id: string;
+  planId?: string;
+  reviewType: "DAILY" | "WEEKLY" | "MONTHLY";
+  periodLabel: string;
+  completionRate: number;
+  adherenceRate: number;
+  observations: string[];
+  createdAt: string;
+};
+
+export type RecommendationRecord = {
+  id: string;
+  planId?: string;
+  title: string;
+  description: string;
+  status: "OPEN" | "APPLIED" | "DISMISSED" | "ARCHIVED";
+  createdAt: string;
 };
 
 export type ExecutionLog = {
@@ -98,6 +130,7 @@ export type CreateTaskInput = {
   status: TaskStatus;
   estimatedMinutes: number;
   scheduledDate: string;
+  scheduledTime?: string;
   dueDate: string;
   subject: string;
 };
@@ -122,6 +155,145 @@ export type CreatePlanInput = {
   planningHorizon: string;
   source: string;
   createdByAgent: boolean;
+};
+
+export type CreateRoutineInput = {
+  planId: string;
+  name: string;
+  description: string;
+  frequencyType: string;
+  timePreference: string;
+};
+
+export type UpdateRoutineInput = Partial<Omit<CreateRoutineInput, "planId">>;
+
+export type AgentTaskInput = {
+  title: string;
+  description?: string;
+  priority?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  difficulty?: "VERY_LOW" | "LOW" | "MEDIUM" | "HIGH" | "VERY_HIGH";
+  estimatedMinutes?: number;
+  context?: string;
+  scheduledDayOffset?: number;
+  dueDayOffset?: number;
+  scheduledTime?: string;
+};
+
+export type AgentRoutineInput = {
+  name: string;
+  frequencyType?: string;
+  timePreference?: string;
+  tasks?: AgentTaskInput[];
+};
+
+export type AgentPlanInput = {
+  userId?: string;
+  briefing?: string;
+  goal?: {
+    title?: string;
+    description?: string;
+    category?: string;
+    priority?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  };
+  constraints?: {
+    availableHoursPerDay?: number;
+    fixedCommitments?: string[];
+    energyPattern?: string;
+  };
+  plan?: {
+    title?: string;
+    description?: string;
+    planningHorizon?: string;
+    routines?: AgentRoutineInput[];
+  };
+};
+
+export type AgentMetrics = {
+  tasksTotal: number;
+  tasksDone: number;
+  completionRate: number;
+  estimatedVsActualRatio: number;
+  consistencyScore: number;
+};
+
+export type AgentContext = {
+  userId: string;
+  user: AuthUser;
+  goals: GoalRecord[];
+  activePlan: (PlanSummary & { description?: string; planningHorizon?: string; source?: string }) | null;
+  routines: Array<{
+    id: string;
+    planId: string;
+    name: string;
+    description: string;
+    frequencyType: string;
+    timePreference: string;
+  }>;
+  tasks: TaskRecord[];
+  metrics: AgentMetrics;
+  latestReview: {
+    id: string;
+    completionRate: number;
+    adherenceRate: number;
+    observations: string[];
+    periodLabel: string;
+  } | null;
+  recommendations: Array<{
+    id: string;
+    title: string;
+    description: string;
+    status: string;
+  }>;
+  recentSessions?: Array<{
+    id: string;
+    inputSummary: string;
+    outputSummary: string;
+    createdAt: string;
+  }>;
+  assistant?: {
+    enabled: boolean;
+    provider: "openai" | "local";
+    model: string;
+  };
+};
+
+export type AgentPlanResult = {
+  goal: GoalRecord;
+  plan: PlanSummary;
+  routines: Array<{
+    id: string;
+    planId: string;
+    name: string;
+    description: string;
+    frequencyType: string;
+    timePreference: string;
+  }>;
+  tasksCreated: number;
+  generator: "openai" | "local";
+  assistantNotes: string[];
+  planningBlueprint: Required<Pick<AgentPlanInput, "goal" | "plan">> & {
+    briefing?: string;
+    constraints?: AgentPlanInput["constraints"];
+  };
+};
+
+export type AgentReplanResult = {
+  message: string;
+  reason: string;
+  recommendedActions: string[];
+  previousPlanId: string;
+  previousVersion: number;
+  planId: string;
+  newVersion: number;
+  tasksMigrated: number;
+  routinesCloned: number;
+  generator: "openai" | "local";
+  assistantNotes: string[];
+};
+
+export type WeeklyReviewResult = {
+  review: ReviewRecord;
+  recommendations: RecommendationRecord[];
 };
 
 export type LoginInput = {
@@ -191,11 +363,20 @@ async function apiRequest<T>(path: string, init?: ApiRequestOptions): Promise<T>
     }
   }
 
-  const response = await fetch(`${API_URL}${path}`, {
-    cache: "no-store",
-    ...init,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      cache: "no-store",
+      ...init,
+      headers,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message
+        ? `NETWORK_ERROR: ${error.message}`
+        : "NETWORK_ERROR";
+    throw new ApiError(message);
+  }
 
   if (!response.ok) {
     let message = `Request failed for ${path}`;
@@ -281,6 +462,10 @@ export function fetchPlans() {
   return apiRequest<PlanSummary[]>("/api/plans");
 }
 
+export function fetchRoutines() {
+  return apiRequest<RoutineRecord[]>("/api/routines");
+}
+
 export function fetchExecutionsToday() {
   return apiRequest<ExecutionLog[]>("/api/executions/today");
 }
@@ -310,6 +495,26 @@ export function createPlan(payload: CreatePlanInput) {
   return apiRequest<PlanSummary>("/api/plans", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export function createRoutine(payload: CreateRoutineInput) {
+  return apiRequest<RoutineRecord>("/api/routines", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateRoutine(id: string, payload: UpdateRoutineInput) {
+  return apiRequest<RoutineRecord>(`/api/routines/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteRoutine(id: string) {
+  return apiRequest<{ success: true }>(`/api/routines/${id}`, {
+    method: "DELETE",
   });
 }
 
@@ -343,5 +548,48 @@ export function stopExecution(taskId: string, actualMinutes: number, notes?: str
   return apiRequest<ExecutionLog>("/api/executions/stop", {
     method: "POST",
     body: JSON.stringify({ taskId, actualMinutes, notes }),
+  });
+}
+
+export function fetchAgentContext() {
+  return apiRequest<AgentContext>("/api/agent/context");
+}
+
+export function createAgentPlan(payload: AgentPlanInput) {
+  return apiRequest<AgentPlanResult>("/api/agent/plan", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function requestAgentReplan(payload: { reason: string; planId?: string }) {
+  return apiRequest<AgentReplanResult>("/api/agent/replan", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function fetchReviews() {
+  return apiRequest<ReviewRecord[]>("/api/reviews");
+}
+
+export function generateWeeklyReview(payload?: { planId?: string; periodLabel?: string }) {
+  return apiRequest<WeeklyReviewResult>("/api/reviews/weekly", {
+    method: "POST",
+    body: JSON.stringify(payload ?? {}),
+  });
+}
+
+export function fetchRecommendations() {
+  return apiRequest<RecommendationRecord[]>("/api/recommendations");
+}
+
+export function updateRecommendationStatus(
+  id: string,
+  status: RecommendationRecord["status"],
+) {
+  return apiRequest<RecommendationRecord>(`/api/recommendations/${id}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
   });
 }

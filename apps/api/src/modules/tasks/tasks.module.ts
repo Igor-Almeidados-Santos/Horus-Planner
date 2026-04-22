@@ -34,6 +34,10 @@ class CreateTaskDto {
   @IsString()
   scheduledDate!: string;
 
+  @IsOptional()
+  @IsString()
+  scheduledTime?: string;
+
   @IsString()
   dueDate!: string;
 
@@ -73,6 +77,10 @@ class UpdateTaskDto {
   @IsOptional()
   @IsString()
   scheduledDate?: string;
+
+  @IsOptional()
+  @IsString()
+  scheduledTime?: string;
 
   @IsOptional()
   @IsString()

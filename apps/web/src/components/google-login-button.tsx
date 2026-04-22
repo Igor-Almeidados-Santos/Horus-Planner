@@ -33,11 +33,12 @@ export function GoogleLoginButton({
   onCredential,
   text = "continue_with",
 }: {
-  onCredential: (credential: string) => void;
+  onCredential: (credential: string) => void | Promise<void>;
   text?: "signin_with" | "signup_with" | "continue_with" | "signin";
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scriptReady, setScriptReady] = useState(false);
+  const [scriptError, setScriptError] = useState<string | null>(null);
   const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
 
   useEffect(() => {
@@ -45,22 +46,30 @@ export function GoogleLoginButton({
       return;
     }
 
-    containerRef.current.innerHTML = "";
-    window.google.accounts.id.initialize({
-      client_id: clientId,
-      callback: ({ credential }) => {
-        onCredential(credential);
-      },
-    });
+    try {
+      setScriptError(null);
+      containerRef.current.innerHTML = "";
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: ({ credential }) => {
+          Promise.resolve(onCredential(credential)).catch((error) => {
+            console.error("Google credential handler failed", error);
+          });
+        },
+      });
 
-    window.google.accounts.id.renderButton(containerRef.current, {
-      theme: "outline",
-      size: "large",
-      shape: "pill",
-      text,
-      width: 320,
-      logo_alignment: "left",
-    });
+      window.google.accounts.id.renderButton(containerRef.current, {
+        theme: "outline",
+        size: "large",
+        shape: "pill",
+        text,
+        width: 320,
+        logo_alignment: "left",
+      });
+    } catch (error) {
+      console.error("Google Identity Services initialization failed", error);
+      setScriptError("Nao foi possivel inicializar o login com Google neste navegador.");
+    }
   }, [clientId, onCredential, scriptReady, text]);
 
   if (!clientId) {
@@ -71,12 +80,23 @@ export function GoogleLoginButton({
     );
   }
 
+  if (scriptError) {
+    return <div className="auth-inline-note">{scriptError}</div>;
+  }
+
   return (
     <>
       <Script
         src="https://accounts.google.com/gsi/client"
         strategy="afterInteractive"
-        onLoad={() => setScriptReady(true)}
+        onLoad={() => {
+          setScriptError(null);
+          setScriptReady(true);
+        }}
+        onError={() => {
+          setScriptReady(false);
+          setScriptError("Nao foi possivel carregar o script do Google. Verifique a conexao e tente novamente.");
+        }}
       />
       <div className="google-login-wrap">
         <div ref={containerRef} />

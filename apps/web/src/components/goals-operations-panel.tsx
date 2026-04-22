@@ -1,6 +1,7 @@
 "use client";
 
 import { startTransition, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import {
   createGoal,
   fetchGoals,
@@ -59,6 +60,7 @@ function goalStatusLabel(status: GoalStatus) {
 }
 
 export function GoalsOperationsPanel() {
+  const router = useRouter();
   const [goals, setGoals] = useState<GoalRecord[]>([]);
   const [form, setForm] = useState<GoalFormState>(initialGoalForm);
   const [isBusy, setIsBusy] = useState(false);
@@ -122,6 +124,7 @@ export function GoalsOperationsPanel() {
         setFeedback("Objetivo criado e adicionado ao radar principal.");
         setForm(initialGoalForm);
         await refreshGoals();
+        router.refresh();
       })
       .catch(() => {
         setError("Nao foi possivel criar o objetivo agora.");
@@ -138,6 +141,7 @@ export function GoalsOperationsPanel() {
       .then(async () => {
         setFeedback(`Objetivo "${goal.title}" atualizado.`);
         await refreshGoals();
+        router.refresh();
       })
       .catch(() => {
         setError("Nao foi possivel atualizar o objetivo.");

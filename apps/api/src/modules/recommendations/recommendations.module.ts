@@ -1,0 +1,29 @@
+import { Body, Controller, Get, Headers, Module, Param, Patch } from "@nestjs/common";
+import { IsIn } from "class-validator";
+import { FirebaseDataService } from "../../firebase/firebase-data.service";
+
+class UpdateRecommendationStatusDto {
+  @IsIn(["OPEN", "APPLIED", "DISMISSED", "ARCHIVED"])
+  status!: "OPEN" | "APPLIED" | "DISMISSED" | "ARCHIVED";
+}
+
+@Controller("recommendations")
+class RecommendationsController {
+  constructor(private readonly database: FirebaseDataService) {}
+
+  @Get()
+  async findAll(@Headers("authorization") authorization?: string) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.getRecommendations(userId);
+  }
+
+  @Patch(":id/status")
+  updateStatus(@Param("id") id: string, @Body() payload: UpdateRecommendationStatusDto) {
+    return this.database.updateRecommendationStatus(id, payload.status);
+  }
+}
+
+@Module({
+  controllers: [RecommendationsController],
+})
+export class RecommendationsModule {}

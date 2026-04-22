@@ -15,8 +15,11 @@ import {
   PlansIcon,
   ReviewIcon,
 } from "./brand-assets";
+import { AgentOperationsPanel } from "./agent-operations-panel";
 import { GoalsOperationsPanel } from "./goals-operations-panel";
 import { PlansOperationsPanel } from "./plans-operations-panel";
+import { ReviewOperationsPanel } from "./review-operations-panel";
+import { RoutinesOperationsPanel } from "./routines-operations-panel";
 import { TaskOperationsPanel } from "./task-operations-panel";
 import {
   clearAuthSession,
@@ -190,6 +193,8 @@ function DashboardContent({ data }: { data: WorkspaceData }) {
         </div>
       </section>
 
+      <AgentOperationsPanel />
+
       <CalendarBoard data={data} />
 
       <div className="content-grid-two">
@@ -319,6 +324,7 @@ function PlansContent({ data }: { data: WorkspaceData }) {
   return (
     <>
       <PlansOperationsPanel />
+      <RoutinesOperationsPanel />
       <CalendarBoard data={data} />
       <div className="content-grid-two">
         <SectionBlock eyebrow="Plan map" title="Estrutura do plano" action="Versoes e rotinas">
@@ -416,6 +422,8 @@ function ExecutionContent({ data }: { data: WorkspaceData }) {
 function ReviewContent({ data }: { data: WorkspaceData }) {
   return (
     <>
+      <ReviewOperationsPanel />
+
       <SectionBlock eyebrow="Review" title="Indicadores da semana" action="Leitura imediata">
         <div className="hero-stats">
           {data.reviewMetrics.map((metric) => (
@@ -502,13 +510,21 @@ function renderView(view: WorkspaceView, data: WorkspaceData) {
 export function WorkspaceShell({ view, data }: { view: WorkspaceView; data: WorkspaceData }) {
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [currentUser, setCurrentUser] = useState<StoredAuthUser | null>(() => getStoredAuthUser());
+  const [currentUser, setCurrentUser] = useState<StoredAuthUser | null>(null);
+  const [authResolved, setAuthResolved] = useState(false);
   const meta = getViewMeta(view);
 
   useEffect(() => {
+    const storedUser = getStoredAuthUser();
     const token = getClientAccessToken();
+
+    if (storedUser) {
+      setCurrentUser(storedUser);
+    }
+
     if (!token) {
       setCurrentUser(null);
+      setAuthResolved(true);
       return;
     }
 
@@ -526,6 +542,9 @@ export function WorkspaceShell({ view, data }: { view: WorkspaceView; data: Work
       .catch(() => {
         clearAuthSession();
         setCurrentUser(null);
+      })
+      .finally(() => {
+        setAuthResolved(true);
       });
   }, []);
 
@@ -533,9 +552,22 @@ export function WorkspaceShell({ view, data }: { view: WorkspaceView; data: Work
     clearAuthSession();
     clearDemoSession();
     setCurrentUser(null);
+    setAuthResolved(true);
     router.push("/login");
     router.refresh();
   }
+
+  const isAuthenticated = authResolved && Boolean(currentUser);
+  const sessionLabel = !authResolved
+    ? "Verificando sessao"
+    : isAuthenticated
+      ? "Conta conectada"
+      : "Modo demonstracao";
+  const sessionCopy = !authResolved
+    ? "Validando acesso salvo neste navegador"
+    : isAuthenticated && currentUser
+      ? `${currentUser.name} · ${currentUser.email}`
+      : "Entre para salvar seu workspace pessoal";
 
   return (
     <main className="page-shell">
@@ -598,15 +630,20 @@ export function WorkspaceShell({ view, data }: { view: WorkspaceView; data: Work
               <HelpIcon />
               <span>Help</span>
             </button>
-            {currentUser ? (
+            {isAuthenticated ? (
               <button type="button" className="sidebar-footer-action" onClick={handleLogout}>
                 <LogoutIcon />
                 <span>Log out</span>
               </button>
-            ) : (
+            ) : authResolved ? (
               <button type="button" className="sidebar-footer-action" onClick={() => router.push("/login")}>
                 <LogoutIcon />
                 <span>Entrar</span>
+              </button>
+            ) : (
+              <button type="button" className="sidebar-footer-action" disabled aria-disabled="true">
+                <LogoutIcon />
+                <span>Carregando</span>
               </button>
             )}
           </div>
@@ -619,18 +656,14 @@ export function WorkspaceShell({ view, data }: { view: WorkspaceView; data: Work
               <h1>{meta.title}</h1>
               <p>{meta.subtitle}</p>
               <div className="topbar-session">
-                <span className="status-chip">
-                  {currentUser ? "Conta conectada" : "Modo demonstracao"}
-                </span>
-                <span className="topbar-session-copy">
-                  {currentUser ? `${currentUser.name} · ${currentUser.email}` : "Entre para salvar seu workspace pessoal"}
-                </span>
+                <span className="status-chip">{sessionLabel}</span>
+                <span className="topbar-session-copy">{sessionCopy}</span>
                 <div className="topbar-session-actions">
-                  {currentUser ? (
+                  {isAuthenticated ? (
                     <button type="button" className="ghost-chip" onClick={handleLogout}>
                       Sair
                     </button>
-                  ) : (
+                  ) : authResolved ? (
                     <>
                       <Link href="/login" className="ghost-chip">
                         Entrar
@@ -639,6 +672,10 @@ export function WorkspaceShell({ view, data }: { view: WorkspaceView; data: Work
                         Criar conta
                       </Link>
                     </>
+                  ) : (
+                    <button type="button" className="ghost-chip" disabled aria-disabled="true">
+                      Carregando
+                    </button>
                   )}
                 </div>
               </div>

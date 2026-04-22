@@ -98,6 +98,7 @@ interface TaskRecord {
   status: TaskStatus;
   estimatedMinutes: number;
   scheduledDate: string;
+  scheduledTime?: string;
   dueDate: string;
   subject: string;
   createdAt: string;
@@ -185,6 +186,7 @@ interface WorkspaceSnapshotRecord {
 }
 
 interface AgentPlanPayload {
+  briefing?: string;
   goal: {
     title: string;
     description?: string;
@@ -206,6 +208,9 @@ interface AgentPlanPayload {
         difficulty?: DifficultyLevel;
         estimatedMinutes?: number;
         context?: string;
+        scheduledDayOffset?: number;
+        dueDayOffset?: number;
+        scheduledTime?: string;
       }>;
     }>;
   };
@@ -327,6 +332,80 @@ export class FirebaseDataService {
       .join("")
       .slice(0, 2)
       .toUpperCase();
+  }
+
+  private formatWeekLabel(date: Date) {
+    const start = new Date(date);
+    const day = start.getUTCDay();
+    const diffToMonday = day === 0 ? -6 : 1 - day;
+    start.setUTCDate(start.getUTCDate() + diffToMonday);
+    const end = new Date(start);
+    end.setUTCDate(start.getUTCDate() + 6);
+
+    const formatter = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" });
+    return `${formatter.format(start)} - ${formatter.format(end)}`;
+  }
+
+  private sortByCreatedAtDesc<T extends { createdAt: string }>(items: T[]) {
+    return [...items].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  private getTimePreferenceRank(timePreference?: string) {
+    switch (timePreference) {
+      case "morning":
+        return 0;
+      case "afternoon":
+        return 1;
+      case "night":
+        return 2;
+      default:
+        return 3;
+    }
+  }
+
+  private buildTaskTimeLabel(input: {
+    timePreference?: string;
+    estimatedMinutes: number;
+    priority: PriorityLevel;
+  }) {
+    const preference = input.timePreference ?? "morning";
+    const isLong = input.estimatedMinutes >= 90;
+    const isHighPriority = input.priority === "HIGH" || input.priority === "CRITICAL";
+
+    if (preference === "morning") {
+      return isHighPriority ? "08:00" : isLong ? "09:30" : "10:30";
+    }
+
+    if (preference === "afternoon") {
+      return isHighPriority ? "13:30" : isLong ? "15:00" : "16:30";
+    }
+
+    if (preference === "night") {
+      return isHighPriority ? "18:30" : isLong ? "19:30" : "20:30";
+    }
+
+    return isHighPriority ? "14:00" : "18:00";
+  }
+
+  private buildTaskWindowLabel(timePreference?: string) {
+    switch (timePreference) {
+      case "morning":
+        return "Manha";
+      case "afternoon":
+        return "Tarde";
+      case "night":
+        return "Noite";
+      default:
+        return "Flexivel";
+    }
+  }
+
+  private buildDefaultScheduledTime(input: {
+    timePreference?: string;
+    estimatedMinutes: number;
+    priority: PriorityLevel;
+  }) {
+    return this.buildTaskTimeLabel(input);
   }
 
   private normalizeFirebaseAuthError(error: unknown) {
@@ -1293,13 +1372,15 @@ export class FirebaseDataService {
     const tasks = await this.listByUser<TaskRecord>("tasks", userId);
     const recommendations = await this.listByUser<RecommendationRecord>("recommendations", userId);
     const reviews = await this.listByUser<ReviewRecord>("reviews", userId);
+    const latestReview = this.sortByCreatedAtDesc(reviews)[0] ?? null;
+
     return {
       completionRate: 74,
       adherenceRate: 69,
       delayedTasks: 5,
       blockedTasks: tasks.filter((task) => task.status === "BLOCKED").length,
-      weeklyReview: reviews[0] ?? null,
-      recommendations,
+      weeklyReview: latestReview,
+      recommendations: this.sortByCreatedAtDesc(recommendations),
     };
   }
 
@@ -1322,6 +1403,143 @@ export class FirebaseDataService {
       estimatedVsActualRatio: totalEstimated ? Number((totalActual / totalEstimated).toFixed(2)) : 0,
       consistencyScore: 81,
     };
+  }
+
+  async getReviews(userId: string) {
+    const reviews = await this.listByUser<ReviewRecord>("reviews", userId);
+    return this.sortByCreatedAtDesc(reviews);
+  }
+
+  async generateWeeklyReview(userId: string, payload?: { planId?: string; periodLabel?: string }) {
+    const [tasks, executionLogs, plans] = await Promise.all([
+      this.listByUser<TaskRecord>("tasks", userId),
+      this.listByUser<ExecutionRecord>("executionLogs", userId),
+      this.listByUser<PlanRecord>("plans", userId),
+    ]);
+
+    const metrics = await this.getMetrics(userId);
+    const now = new Date(`${this.now().slice(0, 10)}T12:00:00.000Z`);
+    const activePlan = plans.find((plan) => plan.status === "ACTIVE") ?? plans[0] ?? null;
+    const planId = payload?.planId ?? activePlan?.id;
+    const blockedTasks = tasks.filter((task) => task.status === "BLOCKED");
+    const delayedTasks = tasks.filter((task) => task.status !== "DONE" && task.dueDate < this.now().slice(0, 10));
+    const inProgressTasks = tasks.filter((task) => task.status === "IN_PROGRESS");
+    const averageFocus =
+      executionLogs.length > 0
+        ? executionLogs.reduce((sum, execution) => sum + execution.focusScore, 0) / executionLogs.length
+        : 0;
+
+    const observations: string[] = [];
+    if (blockedTasks.length > 0) {
+      observations.push(`${blockedTasks.length} tarefas seguem bloqueadas e precisam de destravamento rapido.`);
+    }
+
+    if (delayedTasks.length > 0) {
+      observations.push(`${delayedTasks.length} tarefas ficaram atrasadas e precisam ser redistribuidas.`);
+    }
+
+    if (metrics.estimatedVsActualRatio > 1.15) {
+      observations.push("O tempo real gasto ficou acima do planejado em boa parte da semana.");
+    } else if (metrics.estimatedVsActualRatio > 0 && metrics.estimatedVsActualRatio < 0.65) {
+      observations.push("O planejamento parece superdimensionado para a execucao real atual.");
+    }
+
+    if (averageFocus > 0 && averageFocus < 6) {
+      observations.push("O foco medio ficou baixo, sugerindo friccao ou contexto pouco favoravel.");
+    }
+
+    if (!observations.length) {
+      observations.push("A semana ficou relativamente estavel, com espaco para pequenos ajustes de carga.");
+    }
+
+    const review: ReviewRecord = {
+      id: randomUUID(),
+      userId,
+      planId,
+      reviewType: "WEEKLY",
+      periodLabel: payload?.periodLabel?.trim() || this.formatWeekLabel(now),
+      completionRate: metrics.completionRate,
+      adherenceRate: metrics.adherenceRate,
+      observations,
+      createdAt: this.now(),
+    };
+
+    await this.setDoc("reviews", review);
+
+    const recommendationsToCreate: Array<Pick<RecommendationRecord, "title" | "description" | "status">> = [];
+
+    if (blockedTasks.length > 0) {
+      recommendationsToCreate.push({
+        title: "Destravar tarefas bloqueadas",
+        description: "Mapear impedimentos e mover os itens bloqueados para blocos menores ou dependencias claras.",
+        status: "OPEN",
+      });
+    }
+
+    if (delayedTasks.length > 0) {
+      recommendationsToCreate.push({
+        title: "Redistribuir tarefas atrasadas",
+        description: "Levar tarefas vencidas para os primeiros blocos do dia e reduzir a carga noturna.",
+        status: "OPEN",
+      });
+    }
+
+    if (metrics.estimatedVsActualRatio > 1.15 || metrics.estimatedVsActualRatio < 0.65) {
+      recommendationsToCreate.push({
+        title: "Recalibrar estimativas",
+        description: "Ajustar duracao estimada das tarefas para reduzir desvio entre planejamento e execucao.",
+        status: "OPEN",
+      });
+    }
+
+    if (averageFocus > 0 && averageFocus < 6) {
+      recommendationsToCreate.push({
+        title: "Proteger blocos de foco",
+        description: "Agrupar tarefas de alta energia em janelas com menos interrupcoes e contexto mais limpo.",
+        status: "OPEN",
+      });
+    }
+
+    if (!recommendationsToCreate.length) {
+      recommendationsToCreate.push({
+        title: "Consolidar o ritmo atual",
+        description: "Manter a estrutura da semana e fazer apenas pequenos ajustes finos nas tarefas restantes.",
+        status: "OPEN",
+      });
+    }
+
+    const recommendations = await Promise.all(
+      recommendationsToCreate.map((item) =>
+        this.setDoc("recommendations", {
+          id: randomUUID(),
+          userId,
+          planId,
+          title: item.title,
+          description: item.description,
+          status: item.status,
+          createdAt: this.now(),
+        } satisfies RecommendationRecord),
+      ),
+    );
+
+    return {
+      review,
+      recommendations,
+    };
+  }
+
+  async getRecommendations(userId: string) {
+    const recommendations = await this.listByUser<RecommendationRecord>("recommendations", userId);
+    return this.sortByCreatedAtDesc(recommendations);
+  }
+
+  async updateRecommendationStatus(
+    id: string,
+    status: RecommendationRecord["status"],
+  ) {
+    return this.updateDoc<RecommendationRecord>("recommendations", id, {
+      status,
+    });
   }
 
   async getWorkspaceData(userId: string) {
@@ -1347,16 +1565,30 @@ export class FirebaseDataService {
 
     const snapshot = snapshotList[0];
     const activePlan = plans.find((plan) => plan.status === "ACTIVE") ?? plans[0] ?? null;
+    const routinesById = new Map(routines.map((routine) => [routine.id, routine]));
+    const activePlanTasks = activePlan ? tasks.filter((task) => task.planId === activePlan.id) : tasks;
     const currentExecution =
       executionLogs.find((execution) => execution.status === "IN_PROGRESS") ?? executionLogs[0] ?? null;
     const currentTask = currentExecution
       ? tasks.find((task) => task.id === currentExecution.taskId)
       : tasks.find((task) => task.status === "IN_PROGRESS") ?? tasks[0] ?? null;
-    const latestReview = reviews[0] ?? null;
-    const baseDate = new Date("2026-04-17T12:00:00.000Z");
+    const orderedReviews = this.sortByCreatedAtDesc(reviews);
+    const orderedRecommendations = this.sortByCreatedAtDesc(recommendations);
+    const latestReview = orderedReviews[0] ?? null;
+    const todayIso = this.now().slice(0, 10);
+    const delayedTasks = activePlanTasks.filter(
+      (task) => task.status !== "DONE" && task.status !== "ARCHIVED" && task.dueDate < todayIso,
+    );
+    const relevantTaskDates = activePlanTasks
+      .flatMap((task) => [task.scheduledDate, task.dueDate])
+      .filter((value): value is string => Boolean(value))
+      .sort();
+    const baseDateIso =
+      relevantTaskDates.find((date) => date >= todayIso) ?? relevantTaskDates[0] ?? todayIso;
+    const baseDate = new Date(`${baseDateIso}T12:00:00.000Z`);
     const weekdayFormatter = new Intl.DateTimeFormat("pt-BR", { weekday: "short" });
     const dayFormatter = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" });
-    const tasksByDate = tasks.reduce<Record<string, TaskRecord[]>>((accumulator, task) => {
+    const tasksByDate = activePlanTasks.reduce<Record<string, TaskRecord[]>>((accumulator, task) => {
       const key = task.scheduledDate || task.dueDate;
       if (!accumulator[key]) {
         accumulator[key] = [];
@@ -1369,7 +1601,42 @@ export class FirebaseDataService {
       const currentDate = new Date(baseDate);
       currentDate.setUTCDate(baseDate.getUTCDate() + index);
       const isoDate = currentDate.toISOString().slice(0, 10);
-      const dayTasks = (tasksByDate[isoDate] ?? []).slice(0, 3);
+      const dayTasks = (tasksByDate[isoDate] ?? [])
+        .sort((left, right) => {
+          const leftTime = left.scheduledTime ?? "";
+          const rightTime = right.scheduledTime ?? "";
+          if (leftTime && rightTime && leftTime !== rightTime) {
+            return leftTime.localeCompare(rightTime);
+          }
+
+          if (leftTime && !rightTime) {
+            return -1;
+          }
+
+          if (!leftTime && rightTime) {
+            return 1;
+          }
+
+          const leftRoutine = left.routineId ? routinesById.get(left.routineId) : undefined;
+          const rightRoutine = right.routineId ? routinesById.get(right.routineId) : undefined;
+          const timePreferenceOrder =
+            this.getTimePreferenceRank(leftRoutine?.timePreference) -
+            this.getTimePreferenceRank(rightRoutine?.timePreference);
+
+          if (timePreferenceOrder !== 0) {
+            return timePreferenceOrder;
+          }
+
+          const priorityOrder: Record<PriorityLevel, number> = {
+            CRITICAL: 4,
+            HIGH: 3,
+            MEDIUM: 2,
+            LOW: 1,
+          };
+
+          return priorityOrder[right.priority] - priorityOrder[left.priority];
+        })
+        .slice(0, 4);
       const planFocus =
         dayTasks[0]?.subject ??
         (index === 0 ? "Deep work" : index === 1 ? "Formulas" : index === 2 ? "Revisao" : "Rotina");
@@ -1378,30 +1645,41 @@ export class FirebaseDataService {
         label: weekdayFormatter.format(currentDate).replace(".", ""),
         date: dayFormatter.format(currentDate),
         focus: planFocus,
-        items: dayTasks.map((task) => ({
-          id: task.id,
-          title: task.title,
-          time: task.scheduledDate === "2026-04-17" ? "09:00" : task.scheduledDate === "2026-04-18" ? "08:30" : "18:00",
-          track: task.subject,
-          status:
-            task.status === "IN_PROGRESS"
-              ? "Em progresso"
-              : task.status === "DONE"
-                ? "Concluida"
-                : task.status === "BLOCKED"
-                  ? "Bloqueada"
-                  : "Planejada",
-          tone:
-            task.priority === "CRITICAL" || task.priority === "HIGH"
-              ? "high"
-              : task.priority === "MEDIUM"
-                ? "medium"
-                : "soft",
-        })),
+        items: dayTasks.map((task) => {
+          const routine = task.routineId ? routinesById.get(task.routineId) : undefined;
+          const timePreference = routine?.timePreference;
+
+          return {
+            id: task.id,
+            title: task.title,
+            time:
+              task.scheduledTime ??
+              this.buildTaskTimeLabel({
+                timePreference,
+                estimatedMinutes: task.estimatedMinutes,
+                priority: task.priority,
+              }),
+            track: `${task.subject} · ${this.buildTaskWindowLabel(timePreference)}`,
+            status:
+              task.status === "IN_PROGRESS"
+                ? "Em progresso"
+                : task.status === "DONE"
+                  ? "Concluida"
+                  : task.status === "BLOCKED"
+                    ? "Bloqueada"
+                    : "Planejada",
+            tone:
+              task.priority === "CRITICAL" || task.priority === "HIGH"
+                ? "high"
+                : task.priority === "MEDIUM"
+                  ? "medium"
+                  : "soft",
+          };
+        }),
       };
     });
 
-    const calendarInbox = recommendations.slice(0, 4).map((item) => ({
+    const calendarInbox = orderedRecommendations.slice(0, 4).map((item) => ({
       id: item.id,
       title: item.title,
       detail: item.description,
@@ -1447,8 +1725,16 @@ export class FirebaseDataService {
             },
             {
               title: "Blocos principais",
-              meta: "Manha, tarde e fechamento",
-              items: ["Estudo profundo", "Trabalho operacional", "Flashcards e journal"],
+              meta: "Distribuicao do plano no dia",
+              items: routines
+                .filter((routine) => routine.planId === activePlan.id)
+                .sort(
+                  (left, right) =>
+                    this.getTimePreferenceRank(left.timePreference) -
+                    this.getTimePreferenceRank(right.timePreference),
+                )
+                .slice(0, 4)
+                .map((routine) => `${this.buildTaskWindowLabel(routine.timePreference)} · ${routine.name}`),
             },
           ]
         : [],
@@ -1475,41 +1761,44 @@ export class FirebaseDataService {
       reviewMetrics: [
         { label: "Conclusao", value: `${latestReview?.completionRate ?? 0}%` },
         { label: "Aderencia", value: `${latestReview?.adherenceRate ?? 0}%` },
-        { label: "Tarefas adiadas", value: "5" },
-        { label: "Bloqueadas", value: String(tasks.filter((task) => task.status === "BLOCKED").length) },
+        { label: "Tarefas adiadas", value: String(delayedTasks.length) },
+        { label: "Bloqueadas", value: String(activePlanTasks.filter((task) => task.status === "BLOCKED").length) },
       ],
       weeklyBottlenecks: latestReview?.observations ?? [],
-      recommendations: recommendations.map((item) => item.title),
+      recommendations: orderedRecommendations.map((item) => item.title),
       calendarDays,
       calendarInbox,
-      taskTable: tasks.slice(0, 3).map((task) => ({
-        name: task.title,
-        date: task.dueDate,
-        effort:
-          task.difficulty === "VERY_HIGH"
-            ? "High"
-            : task.difficulty === "HIGH"
+      taskTable: [...activePlanTasks]
+        .sort((left, right) => left.scheduledDate.localeCompare(right.scheduledDate))
+        .slice(0, 5)
+        .map((task) => ({
+          name: task.title,
+          date: task.dueDate,
+          effort:
+            task.difficulty === "VERY_HIGH"
               ? "High"
-              : task.difficulty === "MEDIUM"
-                ? "Medium"
-                : "Low",
-        impact:
-          task.priority === "CRITICAL"
-            ? "High"
-            : task.priority === "HIGH"
+              : task.difficulty === "HIGH"
+                ? "High"
+                : task.difficulty === "MEDIUM"
+                  ? "Medium"
+                  : "Low",
+          impact:
+            task.priority === "CRITICAL"
               ? "High"
-              : task.priority === "MEDIUM"
-                ? "Medium"
-                : "Low",
-        priority:
-          task.priority === "CRITICAL" ? 5 : task.priority === "HIGH" ? 4 : task.priority === "MEDIUM" ? 3 : 1,
-        course: task.subject,
-      })),
+              : task.priority === "HIGH"
+                ? "High"
+                : task.priority === "MEDIUM"
+                  ? "Medium"
+                  : "Low",
+          priority:
+            task.priority === "CRITICAL" ? 5 : task.priority === "HIGH" ? 4 : task.priority === "MEDIUM" ? 3 : 1,
+          course: task.subject,
+        })),
     };
   }
 
   async getAgentContext(userId: string) {
-    const [user, goals, plans, routines, tasks, metrics, reviews, recommendations] = await Promise.all([
+    const [user, goals, plans, routines, tasks, metrics, reviews, recommendations, sessions] = await Promise.all([
       this.getCurrentUser(userId),
       this.listByUser<GoalRecord>("goals", userId),
       this.listByUser<PlanRecord>("plans", userId),
@@ -1518,7 +1807,12 @@ export class FirebaseDataService {
       this.getMetrics(userId),
       this.listByUser<ReviewRecord>("reviews", userId),
       this.listByUser<RecommendationRecord>("recommendations", userId),
+      this.listByUser<AgentSessionRecord>("agentSessions", userId),
     ]);
+
+    const orderedReviews = this.sortByCreatedAtDesc(reviews);
+    const orderedRecommendations = this.sortByCreatedAtDesc(recommendations);
+    const orderedSessions = this.sortByCreatedAtDesc(sessions).slice(0, 8);
 
     return {
       userId,
@@ -1528,19 +1822,28 @@ export class FirebaseDataService {
       routines,
       tasks,
       metrics,
-      latestReview: reviews[0] ?? null,
-      recommendations,
+      latestReview: orderedReviews[0] ?? null,
+      recommendations: orderedRecommendations,
+      recentSessions: orderedSessions.map((session) => ({
+        id: session.id,
+        inputSummary: session.inputSummary ?? "",
+        outputSummary: session.outputSummary ?? "",
+        createdAt: session.createdAt,
+      })),
     };
   }
 
   async ingestAgentPlan(userId: string, payload: AgentPlanPayload) {
+    const today = new Date(`${this.now().slice(0, 10)}T12:00:00.000Z`);
+    const goalTargetDate = new Date(today);
+    goalTargetDate.setUTCDate(today.getUTCDate() + 30);
     const goal = await this.createGoal(userId, {
       title: payload.goal.title,
       description: payload.goal.description ?? "Criado via payload estruturado do agente.",
       category: payload.goal.category ?? "agent_generated",
       priority: payload.goal.priority ?? "HIGH",
       status: "ACTIVE",
-      targetDate: "2026-05-30",
+      targetDate: goalTargetDate.toISOString().slice(0, 10),
     });
 
     const plan = await this.createPlan(userId, {
@@ -1554,7 +1857,7 @@ export class FirebaseDataService {
     });
 
     const routines = await Promise.all(
-      (payload.plan.routines ?? []).map(async (routine) => {
+      (payload.plan.routines ?? []).map(async (routine, routineIndex) => {
         const createdRoutine = await this.createRoutine(userId, {
           planId: plan.id,
           name: routine.name,
@@ -1564,8 +1867,18 @@ export class FirebaseDataService {
         });
 
         await Promise.all(
-          (routine.tasks ?? []).map((task) =>
-            this.createTask(userId, {
+          (routine.tasks ?? []).map((task, taskIndex) => {
+            const timePreference = routine.timePreference ?? "morning";
+            const scheduledDate = new Date(today);
+            scheduledDate.setUTCDate(
+              today.getUTCDate() + (task.scheduledDayOffset ?? routineIndex + taskIndex),
+            );
+            const dueDate = new Date(scheduledDate);
+            dueDate.setUTCDate(
+              scheduledDate.getUTCDate() + Math.max(1, task.dueDayOffset ?? 2),
+            );
+
+            return this.createTask(userId, {
               planId: plan.id,
               routineId: createdRoutine.id,
               title: task.title,
@@ -1575,11 +1888,18 @@ export class FirebaseDataService {
               difficulty: task.difficulty ?? "MEDIUM",
               status: "TODO",
               estimatedMinutes: task.estimatedMinutes ?? 60,
-              scheduledDate: "2026-04-18",
-              dueDate: "2026-04-22",
+              scheduledDate: scheduledDate.toISOString().slice(0, 10),
+              scheduledTime:
+                task.scheduledTime ??
+                this.buildDefaultScheduledTime({
+                  timePreference,
+                  estimatedMinutes: task.estimatedMinutes ?? 60,
+                  priority: task.priority ?? "MEDIUM",
+                }),
+              dueDate: dueDate.toISOString().slice(0, 10),
               subject: routine.name,
-            }),
-          ),
+            });
+          }),
         );
 
         return createdRoutine;
@@ -1589,7 +1909,7 @@ export class FirebaseDataService {
     const session: AgentSessionRecord = {
       id: randomUUID(),
       userId,
-      inputSummary: payload.goal.title,
+      inputSummary: payload.briefing?.trim() || payload.goal.title,
       outputSummary: plan.title,
       contextSnapshot: {
         goalId: goal.id,
@@ -1610,28 +1930,127 @@ export class FirebaseDataService {
   }
 
   async replan(userId: string, payload: { reason: string; planId?: string }) {
+    const plans = await this.listByUser<PlanRecord>("plans", userId);
+    const sourcePlan =
+      (payload.planId ? plans.find((plan) => plan.id === payload.planId) : null) ??
+      plans.find((plan) => plan.status === "ACTIVE") ??
+      plans[0];
+
+    if (!sourcePlan) {
+      throw new NotFoundException(`No plan available for user ${userId}`);
+    }
+
+    const [sourceRoutines, sourceTasks] = await Promise.all([
+      this.listByField<RoutineRecord>("routines", "planId", sourcePlan.id),
+      this.listByField<TaskRecord>("tasks", "planId", sourcePlan.id),
+    ]);
+
+    const pendingTasks = sourceTasks
+      .filter((task) => !["DONE", "ARCHIVED", "CANCELED"].includes(task.status))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+
+    const nextVersion = sourcePlan.version + 1;
+    const now = this.now();
+    const newPlan = await this.createPlan(userId, {
+      goalId: sourcePlan.goalId,
+      title: `${sourcePlan.title} · Ajuste ${nextVersion}`,
+      description: `${sourcePlan.description ?? "Plano reestruturado"} | Replanejado por motivo: ${payload.reason}`,
+      status: "ACTIVE",
+      planningHorizon: sourcePlan.planningHorizon,
+      source: "agent_replan",
+      createdByAgent: true,
+      version: nextVersion,
+    });
+
+    const routineIdMap = new Map<string, string>();
+    const clonedRoutines = await Promise.all(
+      sourceRoutines.map(async (routine) => {
+        const cloned = await this.createRoutine(userId, {
+          planId: newPlan.id,
+          name: routine.name,
+          description: routine.description,
+          frequencyType: routine.frequencyType,
+          timePreference: routine.timePreference,
+        });
+        routineIdMap.set(routine.id, cloned.id);
+        return cloned;
+      }),
+    );
+
+    const baseDate = new Date(`${now.slice(0, 10)}T12:00:00.000Z`);
+    const migratedTasks = await Promise.all(
+      pendingTasks.map((task, index) => {
+        const scheduledDate = new Date(baseDate);
+        scheduledDate.setUTCDate(baseDate.getUTCDate() + index);
+        const dueDate = new Date(scheduledDate);
+        dueDate.setUTCDate(scheduledDate.getUTCDate() + 2);
+
+        return this.createTask(userId, {
+          planId: newPlan.id,
+          routineId: task.routineId ? routineIdMap.get(task.routineId) : undefined,
+          title: task.title,
+          description: task.description,
+          category: task.category,
+          priority: task.status === "BLOCKED" ? "HIGH" : task.priority,
+          difficulty: task.difficulty,
+          status: "TODO",
+          estimatedMinutes: task.estimatedMinutes,
+          scheduledDate: scheduledDate.toISOString().slice(0, 10),
+          dueDate: dueDate.toISOString().slice(0, 10),
+          subject: task.subject,
+        });
+      }),
+    );
+
+    await Promise.all(
+      plans
+        .filter((plan) => plan.status === "ACTIVE")
+        .map((plan) =>
+          this.updateDoc<PlanRecord>("plans", plan.id, {
+            status: "PAUSED",
+            updatedAt: now,
+          }),
+        ),
+    );
+
+    const recommendedActions: string[] = [
+      `Nova versao ${nextVersion} criada a partir de "${sourcePlan.title}".`,
+      pendingTasks.length
+        ? `${pendingTasks.length} tarefas pendentes foram redistribuidas na nova versao.`
+        : "Nao havia tarefas pendentes para migrar.",
+      "A versao anterior foi preservada para historico e comparacao.",
+    ];
+
+    if (pendingTasks.some((task) => task.status === "BLOCKED")) {
+      recommendedActions.push("Tarefas bloqueadas foram recolocadas como TODO com prioridade elevada.");
+    }
+
     const session: AgentSessionRecord = {
       id: randomUUID(),
       userId,
       inputSummary: payload.reason,
-      outputSummary: "Replanejamento solicitado",
+      outputSummary: `Nova versao de plano criada: ${newPlan.title}`,
       contextSnapshot: {
-        planId: payload.planId ?? null,
+        previousPlanId: sourcePlan.id,
+        newPlanId: newPlan.id,
+        previousVersion: sourcePlan.version,
+        newVersion: nextVersion,
       },
-      createdAt: this.now(),
+      createdAt: now,
     };
 
     await this.setDoc("agentSessions", session);
 
     return {
-      message: "Plano reavaliado com sucesso.",
+      message: "Plano reavaliado e versionado com sucesso.",
       reason: payload.reason,
-      recommendedActions: [
-        "Redistribuir tarefas de alta dificuldade para manhã.",
-        "Separar atividades longas em blocos menores.",
-        "Aumentar espaço de revisão semanal.",
-      ],
-      planId: payload.planId ?? "plan_001",
+      recommendedActions,
+      previousPlanId: sourcePlan.id,
+      previousVersion: sourcePlan.version,
+      planId: newPlan.id,
+      newVersion: nextVersion,
+      tasksMigrated: migratedTasks.length,
+      routinesCloned: clonedRoutines.length,
     };
   }
 }

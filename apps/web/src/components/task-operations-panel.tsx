@@ -1,6 +1,7 @@
 "use client";
 
 import { startTransition, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import {
   createTask,
   fetchExecutionsToday,
@@ -35,6 +36,7 @@ type QuickFormState = {
   subject: string;
   estimatedMinutes: string;
   scheduledDate: string;
+  scheduledTime: string;
   dueDate: string;
   priority: CreateTaskInput["priority"];
 };
@@ -44,6 +46,7 @@ const initialFormState: QuickFormState = {
   subject: "",
   estimatedMinutes: "50",
   scheduledDate: todayDate,
+  scheduledTime: "09:00",
   dueDate: todayDate,
   priority: "HIGH",
 };
@@ -62,6 +65,7 @@ function priorityLabel(priority: CreateTaskInput["priority"]) {
 }
 
 export function TaskOperationsPanel() {
+  const router = useRouter();
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [plans, setPlans] = useState<PlanSummary[]>([]);
   const [executions, setExecutions] = useState<ExecutionLog[]>([]);
@@ -161,6 +165,7 @@ export function TaskOperationsPanel() {
       status: "TODO",
       estimatedMinutes: Number(form.estimatedMinutes),
       scheduledDate: form.scheduledDate,
+      scheduledTime: form.scheduledTime || undefined,
       dueDate: form.dueDate,
       subject: form.subject.trim(),
     })
@@ -168,6 +173,7 @@ export function TaskOperationsPanel() {
         setFeedback("Tarefa criada e adicionada ao fluxo operacional.");
         setForm(initialFormState);
         await refreshBoard();
+        router.refresh();
       })
       .catch(() => {
         setError("Nao foi possivel criar a tarefa agora.");
@@ -197,6 +203,7 @@ export function TaskOperationsPanel() {
               : `Status de "${task.title}" atualizado.`,
         );
         await refreshBoard();
+        router.refresh();
       })
       .catch(() => {
         setError("Nao foi possivel atualizar essa tarefa agora.");
@@ -296,6 +303,15 @@ export function TaskOperationsPanel() {
                     value={form.scheduledDate}
                     onChange={(event) => updateForm("scheduledDate", event.target.value)}
                     required
+                  />
+                </label>
+
+                <label>
+                  <span>Horario</span>
+                  <input
+                    type="time"
+                    value={form.scheduledTime}
+                    onChange={(event) => updateForm("scheduledTime", event.target.value)}
                   />
                 </label>
 
