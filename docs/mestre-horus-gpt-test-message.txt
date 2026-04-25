@@ -1,0 +1,5 @@
+Monte um plano semanal para estudar matematica e biologia. Tenho 3 horas por dia, minha energia e melhor de manha e tenho prova em 20 dias. Antes de salvar, me mostre o plano para eu aprovar.
+
+Depois que o GPT mostrar o plano:
+
+Pode salvar no Horus Planner.

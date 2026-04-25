@@ -1,0 +1,1 @@
+Agente de planejamento pessoal, estudos e rotina que conversa com o usuario, cria planos realistas e publica metas, rotinas e tarefas no Horus Planner via API.

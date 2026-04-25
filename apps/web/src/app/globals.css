@@ -980,14 +980,34 @@ th {
   gap: 14px;
 }
 
-.agent-chat-entry {
+.agent-live-chat {
   display: grid;
+  gap: 12px;
+}
+
+.agent-live-chat-log {
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.agent-chat-entry {
+  display: flex;
   gap: 10px;
+}
+
+.agent-chat-entry.from-user {
+  justify-content: flex-end;
+}
+
+.agent-chat-entry.from-assistant {
+  justify-content: flex-start;
 }
 
 .agent-chat-bubble {
   display: grid;
   gap: 8px;
+  width: min(100%, 520px);
   padding: 14px 16px;
   border-radius: 18px;
   border: 1px solid rgba(255, 235, 214, 0.1);
@@ -1005,18 +1025,86 @@ th {
   color: var(--text);
 }
 
-.agent-chat-bubble span {
+.agent-chat-bubble span,
+.agent-chat-bubble em {
   color: var(--muted);
   font-size: 0.78rem;
 }
 
+.agent-chat-bubble em {
+  display: block;
+  font-style: normal;
+  color: var(--accent-soft);
+}
+
 .agent-chat-bubble.user {
   background: rgba(255, 255, 255, 0.04);
+  border-top-right-radius: 6px;
 }
 
 .agent-chat-bubble.assistant {
   background: linear-gradient(135deg, rgba(228, 190, 153, 0.12), rgba(133, 92, 70, 0.08));
   border-color: rgba(228, 190, 153, 0.18);
+  border-top-left-radius: 6px;
+}
+
+.agent-question-list {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-question-list span {
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 235, 214, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted-strong);
+}
+
+.agent-chat-form {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-chat-form label {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-chat-form label span {
+  color: var(--muted);
+}
+
+.agent-chat-form input,
+.agent-chat-form select,
+.agent-chat-form textarea {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 235, 214, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.agent-chat-form textarea {
+  min-height: 92px;
+  padding: 12px;
+  resize: vertical;
+}
+
+.agent-chat-form button {
+  min-height: 42px;
+  border: 1px solid rgba(255, 224, 194, 0.12);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(145, 171, 216, 0.24), rgba(228, 190, 153, 0.16));
+  color: var(--text);
+  cursor: pointer;
+}
+
+.agent-chat-form button:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 .agent-replan-form {

@@ -277,6 +277,36 @@ export type AgentPlanResult = {
   };
 };
 
+export type AgentChatInput = {
+  message: string;
+  hints?: {
+    planningHorizon?: string;
+    availableHoursPerDay?: number;
+    fixedCommitments?: string[];
+    energyPattern?: string;
+    focusAreas?: string[];
+  };
+};
+
+export type AgentChatResult = {
+  assistantReply: string;
+  actionType:
+    | "create_plan"
+    | "create_task"
+    | "update_task"
+    | "create_goal"
+    | "update_goal"
+    | "create_routine"
+    | "replan"
+    | "clarify"
+    | "none";
+  actionLabel: string;
+  mutationSummary: string;
+  planningBlueprint?: AgentPlanResult["planningBlueprint"];
+  questions: string[];
+  context: AgentContext;
+};
+
 export type AgentReplanResult = {
   message: string;
   reason: string;
@@ -294,6 +324,22 @@ export type AgentReplanResult = {
 export type WeeklyReviewResult = {
   review: ReviewRecord;
   recommendations: RecommendationRecord[];
+};
+
+export type ApplyRecommendationResult = {
+  recommendation: RecommendationRecord;
+  replan: {
+    message: string;
+    reason: string;
+    recommendedActions: string[];
+    previousPlanId: string;
+    previousVersion: number;
+    planId: string;
+    newVersion: number;
+    tasksMigrated: number;
+    routinesCloned: number;
+  } | null;
+  message: string;
 };
 
 export type LoginInput = {
@@ -348,7 +394,17 @@ export class ApiError extends Error {
 type ApiRequestOptions = RequestInit & {
   auth?: boolean;
   token?: string | null;
+  timeoutMs?: number;
 };
+
+function resolveRequestTimeout(input?: ApiRequestOptions) {
+  if (typeof input?.timeoutMs === "number" && input.timeoutMs > 0) {
+    return input.timeoutMs;
+  }
+
+  const method = (input?.method ?? "GET").toUpperCase();
+  return method === "GET" ? 8000 : 15000;
+}
 
 async function apiRequest<T>(path: string, init?: ApiRequestOptions): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -363,19 +419,52 @@ async function apiRequest<T>(path: string, init?: ApiRequestOptions): Promise<T>
     }
   }
 
+  const controller = new AbortController();
+  const timeoutMs = resolveRequestTimeout(init);
+  const timeoutId =
+    typeof timeoutMs === "number"
+      ? setTimeout(() => controller.abort(new Error(`TIMEOUT_ERROR: ${path}`)), timeoutMs)
+      : null;
+
+  const externalSignal = init?.signal;
+  const abortFromExternalSignal = () => {
+    controller.abort(
+      externalSignal?.reason instanceof Error
+        ? externalSignal.reason
+        : new Error(`REQUEST_ABORTED: ${path}`),
+    );
+  };
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      abortFromExternalSignal();
+    } else {
+      externalSignal.addEventListener("abort", abortFromExternalSignal, { once: true });
+    }
+  }
+
   let response: Response;
   try {
     response = await fetch(`${API_URL}${path}`, {
       cache: "no-store",
       ...init,
       headers,
+      signal: controller.signal,
     });
   } catch (error) {
-    const message =
-      error instanceof Error && error.message
-        ? `NETWORK_ERROR: ${error.message}`
-        : "NETWORK_ERROR";
+    const baseMessage = error instanceof Error && error.message ? error.message : "NETWORK_ERROR";
+    const message = baseMessage.startsWith("TIMEOUT_ERROR:")
+      ? baseMessage
+      : `NETWORK_ERROR: ${baseMessage}`;
     throw new ApiError(message);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+
+    if (externalSignal) {
+      externalSignal.removeEventListener("abort", abortFromExternalSignal);
+    }
   }
 
   if (!response.ok) {
@@ -409,6 +498,7 @@ export async function fetchWorkspaceData(token?: string | null): Promise<Workspa
     return await apiRequest<WorkspaceData>("/api/dashboard/workspace", {
       token,
       auth: true,
+      timeoutMs: 4000,
     });
   } catch {
     return defaultWorkspaceData;
@@ -562,6 +652,13 @@ export function createAgentPlan(payload: AgentPlanInput) {
   });
 }
 
+export function sendAgentChatMessage(payload: AgentChatInput) {
+  return apiRequest<AgentChatResult>("/api/agent/chat", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function requestAgentReplan(payload: { reason: string; planId?: string }) {
   return apiRequest<AgentReplanResult>("/api/agent/replan", {
     method: "POST",
@@ -591,5 +688,11 @@ export function updateRecommendationStatus(
   return apiRequest<RecommendationRecord>(`/api/recommendations/${id}/status`, {
     method: "PATCH",
     body: JSON.stringify({ status }),
+  });
+}
+
+export function applyRecommendation(id: string) {
+  return apiRequest<ApplyRecommendationResult>(`/api/recommendations/${id}/apply`, {
+    method: "POST",
   });
 }

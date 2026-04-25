@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import {
+  applyRecommendation,
   fetchRecommendations,
   fetchReviews,
   generateWeeklyReview,
@@ -102,6 +103,26 @@ export function ReviewOperationsPanel() {
       router.refresh();
     } catch {
       setError("Nao foi possivel atualizar a recomendacao agora.");
+      setIsBusy(false);
+    }
+  }
+
+  async function handleApplyRecommendation(recommendation: RecommendationRecord) {
+    setIsBusy(true);
+    setError(null);
+    setFeedback(null);
+
+    try {
+      const result = await applyRecommendation(recommendation.id);
+      setFeedback(
+        result.replan
+          ? `${result.message} ${result.replan.tasksMigrated} tarefas foram migradas para o novo plano.`
+          : result.message,
+      );
+      await refreshReviewData();
+      router.refresh();
+    } catch {
+      setError("Nao foi possivel aplicar a recomendacao agora.");
       setIsBusy(false);
     }
   }
@@ -220,7 +241,7 @@ export function ReviewOperationsPanel() {
                           {recommendation.status !== "APPLIED" ? (
                             <button
                               type="button"
-                              onClick={() => handleRecommendationStatus(recommendation, "APPLIED")}
+                              onClick={() => handleApplyRecommendation(recommendation)}
                               disabled={isBusy}
                             >
                               Aplicar

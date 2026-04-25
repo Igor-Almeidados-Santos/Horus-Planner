@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Module, Param, Patch } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Module, Param, Patch, Post } from "@nestjs/common";
 import { IsIn } from "class-validator";
 import { FirebaseDataService } from "../../firebase/firebase-data.service";
 
@@ -15,6 +15,12 @@ class RecommendationsController {
   async findAll(@Headers("authorization") authorization?: string) {
     const userId = await this.database.resolveUserId(authorization);
     return this.database.getRecommendations(userId);
+  }
+
+  @Post(":id/apply")
+  async apply(@Headers("authorization") authorization: string | undefined, @Param("id") id: string) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.applyRecommendation(userId, id);
   }
 
   @Patch(":id/status")

@@ -2,6 +2,15 @@ import { Injectable, Logger } from "@nestjs/common";
 
 type PriorityLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 type DifficultyLevel = "VERY_LOW" | "LOW" | "MEDIUM" | "HIGH" | "VERY_HIGH";
+type GoalStatus = "DRAFT" | "ACTIVE" | "PAUSED" | "COMPLETED" | "ARCHIVED";
+type TaskStatus =
+  | "TODO"
+  | "IN_PROGRESS"
+  | "PAUSED"
+  | "BLOCKED"
+  | "DONE"
+  | "CANCELED"
+  | "ARCHIVED";
 
 type AgentTaskInput = {
   title: string;
@@ -156,6 +165,51 @@ type GeneratedAgentPlan = {
 type GeneratedReplanAdvice = {
   assistantNotes: string[];
   recommendedActions: string[];
+};
+
+export type AgentChatDecision = {
+  assistantReply: string;
+  actionType:
+    | "create_plan"
+    | "create_task"
+    | "update_task"
+    | "create_goal"
+    | "update_goal"
+    | "create_routine"
+    | "replan"
+    | "clarify"
+    | "none";
+  actionLabel: string;
+  targetId: string;
+  targetTitle: string;
+  reasonText: string;
+  planBriefing: string;
+  planningHorizon: string;
+  availableHoursPerDay: number;
+  fixedCommitments: string[];
+  energyPattern: string;
+  goalTitle: string;
+  goalDescription: string;
+  goalCategory: string;
+  goalPriority: PriorityLevel;
+  goalStatus: GoalStatus;
+  goalTargetDate: string;
+  taskTitle: string;
+  taskDescription: string;
+  taskSubject: string;
+  taskPriority: PriorityLevel;
+  taskDifficulty: DifficultyLevel;
+  taskStatus: TaskStatus;
+  estimatedMinutes: number;
+  scheduledDate: string;
+  scheduledTime: string;
+  dueDate: string;
+  routineName: string;
+  routineDescription: string;
+  routineFrequencyType: string;
+  routineTimePreference: string;
+  progress: number;
+  questions: string[];
 };
 
 type OpenAiResponse = {
@@ -456,6 +510,313 @@ Ao gerar o plano estruturado:
       this.logger.warn(`OpenAI replan advice failed, falling back to local planner: ${this.stringifyError(error)}`);
       return null;
     }
+  }
+
+  async interpretChatAction(input: {
+    message: string;
+    context: AgentContextSnapshot;
+    hints?: {
+      planningHorizon?: string;
+      availableHoursPerDay?: number;
+      fixedCommitments?: string[];
+      energyPattern?: string;
+      focusAreas?: string[];
+    };
+  }) {
+    if (!this.getConfig().enabled) {
+      return this.createLocalChatDecision(input);
+    }
+
+    try {
+      const compactContext = this.buildCompactContext(input.context);
+      return await this.createStructuredResponse<AgentChatDecision>({
+        name: "horus_agent_chat",
+        instructions: `
+${this.planningInstructions}
+
+Voce esta operando como um agente conversacional do sistema Horus Planner.
+Sua funcao e ler a mensagem do usuario, decidir a melhor acao operacional e responder de forma curta, clara e acionavel.
+
+Capacidades reais do sistema:
+- criar um planejamento completo
+- criar tarefa
+- atualizar tarefa existente
+- criar objetivo
+- atualizar objetivo existente
+- criar rotina
+- replanejar um plano ativo
+- pedir esclarecimento quando faltar contexto
+
+Regras para escolha da acao:
+- use create_plan quando o usuario pedir rotina, agenda, plano, organizacao completa ou distribuicao de estudos/trabalho
+- use create_task para adicionar uma tarefa pontual
+- use update_task para concluir, bloquear, remarcar ou alterar uma tarefa existente
+- use create_goal para uma nova meta ou objetivo
+- use update_goal para alterar status, progresso ou prazo de objetivo
+- use create_routine para criar um bloco recorrente de rotina
+- use replan quando o usuario pedir redistribuicao, reorganizacao ou novo ajuste de um plano existente
+- use clarify quando faltar informacao critica para agir com utilidade
+- use none quando a melhor resposta for apenas orientacao sem mutacao
+
+Quando usar clarify:
+- faca de 1 a 3 perguntas objetivas
+- nao faca perguntas desnecessarias se der para inferir com seguranca
+
+Sempre:
+- responda em portugues do Brasil
+- produza assistantReply como mensagem final para o usuario
+- se houver mutacao, explique resumidamente o que sera feito ou foi feito
+- preencha apenas os campos relevantes com conteudo forte; os irrelevantes podem ficar vazios ou neutros
+        `.trim(),
+        prompt: JSON.stringify(
+          {
+            requestType: "agent_chat",
+            userMessage: input.message,
+            hints: input.hints ?? {},
+            currentWorkspace: compactContext,
+          },
+          null,
+          2,
+        ),
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "assistantReply",
+            "actionType",
+            "actionLabel",
+            "targetId",
+            "targetTitle",
+            "reasonText",
+            "planBriefing",
+            "planningHorizon",
+            "availableHoursPerDay",
+            "fixedCommitments",
+            "energyPattern",
+            "goalTitle",
+            "goalDescription",
+            "goalCategory",
+            "goalPriority",
+            "goalStatus",
+            "goalTargetDate",
+            "taskTitle",
+            "taskDescription",
+            "taskSubject",
+            "taskPriority",
+            "taskDifficulty",
+            "taskStatus",
+            "estimatedMinutes",
+            "scheduledDate",
+            "scheduledTime",
+            "dueDate",
+            "routineName",
+            "routineDescription",
+            "routineFrequencyType",
+            "routineTimePreference",
+            "progress",
+            "questions",
+          ],
+          properties: {
+            assistantReply: { type: "string" },
+            actionType: {
+              type: "string",
+              enum: [
+                "create_plan",
+                "create_task",
+                "update_task",
+                "create_goal",
+                "update_goal",
+                "create_routine",
+                "replan",
+                "clarify",
+                "none",
+              ],
+            },
+            actionLabel: { type: "string" },
+            targetId: { type: "string" },
+            targetTitle: { type: "string" },
+            reasonText: { type: "string" },
+            planBriefing: { type: "string" },
+            planningHorizon: { type: "string" },
+            availableHoursPerDay: { type: "integer" },
+            fixedCommitments: {
+              type: "array",
+              items: { type: "string" },
+            },
+            energyPattern: { type: "string" },
+            goalTitle: { type: "string" },
+            goalDescription: { type: "string" },
+            goalCategory: { type: "string" },
+            goalPriority: {
+              type: "string",
+              enum: ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+            },
+            goalStatus: {
+              type: "string",
+              enum: ["DRAFT", "ACTIVE", "PAUSED", "COMPLETED", "ARCHIVED"],
+            },
+            goalTargetDate: { type: "string" },
+            taskTitle: { type: "string" },
+            taskDescription: { type: "string" },
+            taskSubject: { type: "string" },
+            taskPriority: {
+              type: "string",
+              enum: ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+            },
+            taskDifficulty: {
+              type: "string",
+              enum: ["VERY_LOW", "LOW", "MEDIUM", "HIGH", "VERY_HIGH"],
+            },
+            taskStatus: {
+              type: "string",
+              enum: ["TODO", "IN_PROGRESS", "PAUSED", "BLOCKED", "DONE", "CANCELED", "ARCHIVED"],
+            },
+            estimatedMinutes: { type: "integer" },
+            scheduledDate: { type: "string" },
+            scheduledTime: { type: "string" },
+            dueDate: { type: "string" },
+            routineName: { type: "string" },
+            routineDescription: { type: "string" },
+            routineFrequencyType: { type: "string" },
+            routineTimePreference: { type: "string" },
+            progress: { type: "integer" },
+            questions: {
+              type: "array",
+              items: { type: "string" },
+            },
+          },
+        },
+      });
+    } catch (error) {
+      this.logger.warn(`OpenAI chat interpretation failed, falling back to local chat: ${this.stringifyError(error)}`);
+      return this.createLocalChatDecision(input);
+    }
+  }
+
+  private createLocalChatDecision(input: {
+    message: string;
+    hints?: {
+      planningHorizon?: string;
+      availableHoursPerDay?: number;
+      fixedCommitments?: string[];
+      energyPattern?: string;
+      focusAreas?: string[];
+    };
+  }): AgentChatDecision {
+    const message = input.message.trim();
+    const normalized = message.toLowerCase();
+    const today = new Date().toISOString().slice(0, 10);
+    const focusSubject = input.hints?.focusAreas?.[0] ?? "";
+    const defaultReply =
+      "Estou com o modo local ativo porque a OpenAI nao respondeu agora. Ainda posso te orientar e registrar acoes simples; para raciocinio completo, ajuste a quota da chave da OpenAI.";
+
+    const decision = this.emptyChatDecision({
+      assistantReply: message ? `${defaultReply} Entendi: ${message}` : defaultReply,
+      actionType: "none",
+      actionLabel: "Resposta local",
+      planningHorizon: input.hints?.planningHorizon ?? "weekly",
+      availableHoursPerDay: input.hints?.availableHoursPerDay ?? 4,
+      fixedCommitments: input.hints?.fixedCommitments ?? [],
+      energyPattern: input.hints?.energyPattern ?? "balanced",
+      scheduledDate: today,
+      dueDate: today,
+      taskSubject: focusSubject,
+    });
+
+    if (normalized.includes("crie") && normalized.includes("tarefa")) {
+      const taskTitle = this.extractLocalTitle(message, ["crie uma tarefa", "criar uma tarefa", "tarefa"]);
+      return {
+        ...decision,
+        assistantReply: `Criei uma tarefa a partir do seu pedido: "${taskTitle}".`,
+        actionType: "create_task",
+        actionLabel: "Criar tarefa",
+        taskTitle,
+        taskDescription: message,
+        taskSubject: focusSubject || "Planejamento",
+      };
+    }
+
+    if (normalized.includes("replanej") || normalized.includes("reorgan")) {
+      return {
+        ...decision,
+        assistantReply: "Vou criar uma nova versao do plano ativo para redistribuir sua carga.",
+        actionType: "replan",
+        actionLabel: "Replanejar",
+        reasonText: message,
+      };
+    }
+
+    if ((normalized.includes("crie") || normalized.includes("nova")) && normalized.includes("meta")) {
+      const goalTitle = this.extractLocalTitle(message, ["crie uma meta", "nova meta", "meta"]);
+      return {
+        ...decision,
+        assistantReply: `Criei uma meta a partir do seu pedido: "${goalTitle}".`,
+        actionType: "create_goal",
+        actionLabel: "Criar meta",
+        goalTitle,
+        goalDescription: message,
+        goalCategory: focusSubject || "agent_chat",
+        goalTargetDate: today,
+      };
+    }
+
+    return decision;
+  }
+
+  private emptyChatDecision(overrides: Partial<AgentChatDecision>): AgentChatDecision {
+    return {
+      assistantReply: "",
+      actionType: "none",
+      actionLabel: "",
+      targetId: "",
+      targetTitle: "",
+      reasonText: "",
+      planBriefing: "",
+      planningHorizon: "weekly",
+      availableHoursPerDay: 4,
+      fixedCommitments: [],
+      energyPattern: "balanced",
+      goalTitle: "",
+      goalDescription: "",
+      goalCategory: "agent_chat",
+      goalPriority: "HIGH",
+      goalStatus: "ACTIVE",
+      goalTargetDate: "",
+      taskTitle: "",
+      taskDescription: "",
+      taskSubject: "",
+      taskPriority: "MEDIUM",
+      taskDifficulty: "MEDIUM",
+      taskStatus: "TODO",
+      estimatedMinutes: 45,
+      scheduledDate: "",
+      scheduledTime: "",
+      dueDate: "",
+      routineName: "",
+      routineDescription: "",
+      routineFrequencyType: "daily",
+      routineTimePreference: "morning",
+      progress: 0,
+      questions: [],
+      ...overrides,
+    };
+  }
+
+  private extractLocalTitle(message: string, prefixes: string[]) {
+    const normalized = message.trim();
+    const lower = normalized.toLowerCase();
+    const prefix = prefixes.find((item) => lower.includes(item));
+    if (!prefix) {
+      return normalized.slice(0, 80) || "Nova entrada";
+    }
+
+    const start = lower.indexOf(prefix) + prefix.length;
+    const title = normalized
+      .slice(start)
+      .replace(/^(para|de|sobre|:|-)/i, "")
+      .trim();
+
+    return title.slice(0, 80) || "Nova entrada";
   }
 
   private mergePlanPayload(

@@ -408,6 +408,14 @@ export class FirebaseDataService {
     return this.buildTaskTimeLabel(input);
   }
 
+  private toPercent(value: number, total: number) {
+    if (!total) {
+      return 0;
+    }
+
+    return Math.max(0, Math.min(100, Math.round((value / total) * 100)));
+  }
+
   private normalizeFirebaseAuthError(error: unknown) {
     const code =
       typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
@@ -1411,22 +1419,35 @@ export class FirebaseDataService {
   }
 
   async generateWeeklyReview(userId: string, payload?: { planId?: string; periodLabel?: string }) {
-    const [tasks, executionLogs, plans] = await Promise.all([
+    const [tasks, executionLogs, plans, recommendations] = await Promise.all([
       this.listByUser<TaskRecord>("tasks", userId),
       this.listByUser<ExecutionRecord>("executionLogs", userId),
       this.listByUser<PlanRecord>("plans", userId),
+      this.listByUser<RecommendationRecord>("recommendations", userId),
     ]);
-
-    const metrics = await this.getMetrics(userId);
     const now = new Date(`${this.now().slice(0, 10)}T12:00:00.000Z`);
+    const todayIso = this.now().slice(0, 10);
     const activePlan = plans.find((plan) => plan.status === "ACTIVE") ?? plans[0] ?? null;
     const planId = payload?.planId ?? activePlan?.id;
-    const blockedTasks = tasks.filter((task) => task.status === "BLOCKED");
-    const delayedTasks = tasks.filter((task) => task.status !== "DONE" && task.dueDate < this.now().slice(0, 10));
-    const inProgressTasks = tasks.filter((task) => task.status === "IN_PROGRESS");
+    const scopedTasks = planId ? tasks.filter((task) => task.planId === planId) : tasks;
+    const scopedTaskIds = new Set(scopedTasks.map((task) => task.id));
+    const scopedExecutionLogs = executionLogs.filter((execution) => scopedTaskIds.has(execution.taskId));
+    const blockedTasks = scopedTasks.filter((task) => task.status === "BLOCKED");
+    const delayedTasks = scopedTasks.filter((task) => task.status !== "DONE" && task.dueDate < todayIso);
+    const inProgressTasks = scopedTasks.filter((task) => task.status === "IN_PROGRESS");
+    const completedTasks = scopedTasks.filter((task) => task.status === "DONE");
+    const plannedTasks = scopedTasks.filter((task) => (task.scheduledDate || task.dueDate) <= todayIso);
+    const onTrackTasks = plannedTasks.filter(
+      (task) => task.status === "DONE" || (task.status !== "BLOCKED" && task.dueDate >= todayIso),
+    );
+    const completionRate = this.toPercent(completedTasks.length, scopedTasks.length);
+    const adherenceRate = plannedTasks.length ? this.toPercent(onTrackTasks.length, plannedTasks.length) : completionRate;
+    const totalEstimated = scopedTasks.reduce((sum, task) => sum + task.estimatedMinutes, 0);
+    const totalActual = scopedExecutionLogs.reduce((sum, log) => sum + log.actualMinutes, 0);
+    const estimatedVsActualRatio = totalEstimated ? Number((totalActual / totalEstimated).toFixed(2)) : 0;
     const averageFocus =
-      executionLogs.length > 0
-        ? executionLogs.reduce((sum, execution) => sum + execution.focusScore, 0) / executionLogs.length
+      scopedExecutionLogs.length > 0
+        ? scopedExecutionLogs.reduce((sum, execution) => sum + execution.focusScore, 0) / scopedExecutionLogs.length
         : 0;
 
     const observations: string[] = [];
@@ -1438,14 +1459,22 @@ export class FirebaseDataService {
       observations.push(`${delayedTasks.length} tarefas ficaram atrasadas e precisam ser redistribuidas.`);
     }
 
-    if (metrics.estimatedVsActualRatio > 1.15) {
+    if (estimatedVsActualRatio > 1.15) {
       observations.push("O tempo real gasto ficou acima do planejado em boa parte da semana.");
-    } else if (metrics.estimatedVsActualRatio > 0 && metrics.estimatedVsActualRatio < 0.65) {
+    } else if (estimatedVsActualRatio > 0 && estimatedVsActualRatio < 0.65) {
       observations.push("O planejamento parece superdimensionado para a execucao real atual.");
     }
 
     if (averageFocus > 0 && averageFocus < 6) {
       observations.push("O foco medio ficou baixo, sugerindo friccao ou contexto pouco favoravel.");
+    }
+
+    if (inProgressTasks.length >= 3) {
+      observations.push("Ha varias tarefas em progresso ao mesmo tempo, o que pode indicar troca excessiva de contexto.");
+    }
+
+    if (completionRate >= 80 && delayedTasks.length === 0 && blockedTasks.length === 0) {
+      observations.push("A execucao da semana ficou consistente e com bom nivel de previsibilidade.");
     }
 
     if (!observations.length) {
@@ -1458,8 +1487,8 @@ export class FirebaseDataService {
       planId,
       reviewType: "WEEKLY",
       periodLabel: payload?.periodLabel?.trim() || this.formatWeekLabel(now),
-      completionRate: metrics.completionRate,
-      adherenceRate: metrics.adherenceRate,
+      completionRate,
+      adherenceRate,
       observations,
       createdAt: this.now(),
     };
@@ -1484,7 +1513,7 @@ export class FirebaseDataService {
       });
     }
 
-    if (metrics.estimatedVsActualRatio > 1.15 || metrics.estimatedVsActualRatio < 0.65) {
+    if (estimatedVsActualRatio > 1.15 || estimatedVsActualRatio < 0.65) {
       recommendationsToCreate.push({
         title: "Recalibrar estimativas",
         description: "Ajustar duracao estimada das tarefas para reduzir desvio entre planejamento e execucao.",
@@ -1500,6 +1529,14 @@ export class FirebaseDataService {
       });
     }
 
+    if (inProgressTasks.length >= 3) {
+      recommendationsToCreate.push({
+        title: "Reduzir frentes simultaneas",
+        description: "Diminuir o numero de tarefas em progresso e concluir blocos antes de abrir novas frentes.",
+        status: "OPEN",
+      });
+    }
+
     if (!recommendationsToCreate.length) {
       recommendationsToCreate.push({
         title: "Consolidar o ritmo atual",
@@ -1508,9 +1545,18 @@ export class FirebaseDataService {
       });
     }
 
-    const recommendations = await Promise.all(
-      recommendationsToCreate.map((item) =>
-        this.setDoc("recommendations", {
+    const existingOpenRecommendations = recommendations.filter(
+      (item) => item.status === "OPEN" && (planId ? item.planId === planId : true),
+    );
+
+    const persistedRecommendations = await Promise.all(
+      recommendationsToCreate.map(async (item) => {
+        const existing = existingOpenRecommendations.find((recommendation) => recommendation.title === item.title);
+        if (existing) {
+          return existing;
+        }
+
+        return this.setDoc("recommendations", {
           id: randomUUID(),
           userId,
           planId,
@@ -1518,19 +1564,48 @@ export class FirebaseDataService {
           description: item.description,
           status: item.status,
           createdAt: this.now(),
-        } satisfies RecommendationRecord),
-      ),
+        } satisfies RecommendationRecord);
+      }),
     );
 
     return {
       review,
-      recommendations,
+      recommendations: persistedRecommendations,
     };
   }
 
   async getRecommendations(userId: string) {
     const recommendations = await this.listByUser<RecommendationRecord>("recommendations", userId);
     return this.sortByCreatedAtDesc(recommendations);
+  }
+
+  async applyRecommendation(userId: string, id: string) {
+    const recommendation = await this.getDoc<RecommendationRecord>("recommendations", id);
+    if (recommendation.userId !== userId) {
+      throw new UnauthorizedException("Recommendation does not belong to the authenticated user");
+    }
+
+    const updatedRecommendation =
+      recommendation.status === "APPLIED"
+        ? recommendation
+        : await this.updateDoc<RecommendationRecord>("recommendations", id, {
+            status: "APPLIED",
+          });
+
+    const replanResult = recommendation.planId
+      ? await this.replan(userId, {
+          planId: recommendation.planId,
+          reason: `Aplicar recomendacao: ${recommendation.title}. ${recommendation.description}`,
+        })
+      : null;
+
+    return {
+      recommendation: updatedRecommendation,
+      replan: replanResult,
+      message: replanResult
+        ? `Recomendacao aplicada e plano reavaliado para a versao ${replanResult.newVersion}.`
+        : "Recomendacao aplicada com sucesso.",
+    };
   }
 
   async updateRecommendationStatus(
@@ -1833,6 +1908,26 @@ export class FirebaseDataService {
     };
   }
 
+  async createAgentSession(
+    userId: string,
+    payload: {
+      inputSummary?: string;
+      outputSummary?: string;
+      contextSnapshot?: Record<string, unknown>;
+    },
+  ) {
+    const session: AgentSessionRecord = {
+      id: randomUUID(),
+      userId,
+      inputSummary: payload.inputSummary,
+      outputSummary: payload.outputSummary,
+      contextSnapshot: payload.contextSnapshot,
+      createdAt: this.now(),
+    };
+
+    return this.setDoc("agentSessions", session);
+  }
+
   async ingestAgentPlan(userId: string, payload: AgentPlanPayload) {
     const today = new Date(`${this.now().slice(0, 10)}T12:00:00.000Z`);
     const goalTargetDate = new Date(today);
@@ -1906,18 +2001,14 @@ export class FirebaseDataService {
       }),
     );
 
-    const session: AgentSessionRecord = {
-      id: randomUUID(),
-      userId,
+    await this.createAgentSession(userId, {
       inputSummary: payload.briefing?.trim() || payload.goal.title,
       outputSummary: plan.title,
       contextSnapshot: {
         goalId: goal.id,
         planId: plan.id,
       },
-      createdAt: this.now(),
-    };
-    await this.setDoc("agentSessions", session);
+    });
 
     const tasksCreated = (await this.listByField<TaskRecord>("tasks", "planId", plan.id)).length;
 
@@ -2025,9 +2116,7 @@ export class FirebaseDataService {
       recommendedActions.push("Tarefas bloqueadas foram recolocadas como TODO com prioridade elevada.");
     }
 
-    const session: AgentSessionRecord = {
-      id: randomUUID(),
-      userId,
+    await this.createAgentSession(userId, {
       inputSummary: payload.reason,
       outputSummary: `Nova versao de plano criada: ${newPlan.title}`,
       contextSnapshot: {
@@ -2036,10 +2125,7 @@ export class FirebaseDataService {
         previousVersion: sourcePlan.version,
         newVersion: nextVersion,
       },
-      createdAt: now,
-    };
-
-    await this.setDoc("agentSessions", session);
+    });
 
     return {
       message: "Plano reavaliado e versionado com sucesso.",

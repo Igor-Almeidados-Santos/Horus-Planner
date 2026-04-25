@@ -1,17 +1,15 @@
 "use client";
 
-import { useDeferredValue, useEffect, useMemo, useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   ApiError,
-  createAgentPlan,
   fetchAgentContext,
-  requestAgentReplan,
+  sendAgentChatMessage,
+  type AgentChatResult,
   type AgentContext,
-  type AgentPlanInput,
-  type AgentPlanResult,
 } from "../services/horus-api";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 const energyPatternLabels: Record<string, string> = {
   morning_peak: "Pico pela manha",
   balanced: "Distribuido ao longo do dia",
@@ -19,54 +17,39 @@ const energyPatternLabels: Record<string, string> = {
   night_peak: "Pico a noite",
 };
 
-type AgentFormState = {
-  briefing: string;
-  focusAreas: string;
+type AgentChatFormState = {
+  message: string;
   planningHorizon: string;
   availableHoursPerDay: string;
   energyPattern: string;
   fixedCommitments: string;
+  focusAreas: string;
 };
 
-const initialAgentForm: AgentFormState = {
-  briefing: "",
-  focusAreas: "",
+type ChatEntry = {
+  id: string;
+  role: "user" | "assistant";
+  title: string;
+  body: string;
+  meta?: string;
+  questions?: string[];
+  blueprintSummary?: string[];
+};
+
+const initialChatForm: AgentChatFormState = {
+  message: "",
   planningHorizon: "weekly",
   availableHoursPerDay: "4",
-  energyPattern: "morning_peak",
+  energyPattern: "balanced",
   fixedCommitments: "",
+  focusAreas: "",
 };
 
-function parseFocusAreas(value: string) {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .slice(0, 5);
-}
-
-function buildChatBriefing(form: AgentFormState, focusAreas: string[]) {
-  const sections = [form.briefing.trim()];
-
-  if (focusAreas.length) {
-    sections.push(`Areas de foco citadas: ${focusAreas.join(", ")}.`);
-  }
-
-  sections.push(`Horizonte desejado: ${form.planningHorizon}.`);
-  sections.push(`Horas disponiveis por dia: ${form.availableHoursPerDay}.`);
-  sections.push(`Padrao de energia: ${form.energyPattern}.`);
-
-  const commitments = form.fixedCommitments
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-  if (commitments.length) {
-    sections.push(`Compromissos fixos: ${commitments.join(", ")}.`);
-  }
-
-  return sections.filter(Boolean).join("\n");
-}
+const suggestedPrompts = [
+  "Monte um plano semanal de estudos com 3 horas por dia e prioridade para matematica e biologia.",
+  "Crie uma tarefa para revisar biologia amanha as 09:00 com 45 minutos.",
+  "Reorganize meu plano atual porque acumulei tarefas e estou com pouca energia esta semana.",
+];
 
 function buildAgentError(error: unknown, fallback: string) {
   if (error instanceof ApiError && error.message) {
@@ -80,18 +63,45 @@ function buildAgentError(error: unknown, fallback: string) {
   return fallback;
 }
 
-export function AgentOperationsPanel() {
-  const router = useRouter();
-  const [context, setContext] = useState<AgentContext | null>(null);
-  const [form, setForm] = useState<AgentFormState>(initialAgentForm);
-  const [replanReason, setReplanReason] = useState("");
-  const [latestPlan, setLatestPlan] = useState<AgentPlanResult | null>(null);
-  const [isBusy, setIsBusy] = useState(false);
-  const [feedback, setFeedback] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function splitCsv(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
-  const deferredFocusAreas = useDeferredValue(form.focusAreas);
-  const focusAreas = useMemo(() => parseFocusAreas(deferredFocusAreas), [deferredFocusAreas]);
+function buildAssistantMeta(result: AgentChatResult) {
+  const parts = [result.actionLabel, result.actionType !== "none" ? result.actionType : ""].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function buildBlueprintSummary(result: AgentChatResult) {
+  const blueprint = result.planningBlueprint;
+  if (!blueprint) {
+    return [];
+  }
+
+  const routines = blueprint.plan?.routines ?? [];
+  const tasks = routines.reduce((total, routine) => total + (routine.tasks?.length ?? 0), 0);
+
+  return [
+    `Objetivo: ${blueprint.goal.title}`,
+    `Plano: ${blueprint.plan.title}`,
+    `Horizonte: ${blueprint.plan.planningHorizon ?? "weekly"}`,
+    `Estrutura: ${routines.length} rotinas e ${tasks} tarefas`,
+  ];
+}
+
+export function AgentOperationsPanel() {
+  const [context, setContext] = useState<AgentContext | null>(null);
+  const [isBusy, setIsBusy] = useState(false);
+  const [isChatBusy, setIsChatBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [chatForm, setChatForm] = useState<AgentChatFormState>(initialChatForm);
+  const [chatEntries, setChatEntries] = useState<ChatEntry[]>([]);
+
+  const actionSchemaUrl = `${API_URL}/api/gpt-actions/openapi.json`;
+  const publishEndpoint = `${API_URL}/api/gpt-actions/plans`;
 
   const summary = useMemo(() => {
     if (!context) {
@@ -103,111 +113,92 @@ export function AgentOperationsPanel() {
       };
     }
 
+    const goals = context.goals ?? [];
+    const routines = context.routines ?? [];
+    const tasks = context.tasks ?? [];
+
     return {
-      activeGoals: context.goals.filter((goal) => goal.status === "ACTIVE").length,
-      routines: context.routines.length,
-      tasks: context.tasks.length,
-      consistencyScore: context.metrics.consistencyScore,
+      activeGoals: goals.filter((goal) => goal.status === "ACTIVE").length,
+      routines: routines.length,
+      tasks: tasks.length,
+      consistencyScore: context.metrics?.consistencyScore ?? 0,
     };
   }, [context]);
 
   async function refreshContext() {
     setIsBusy(true);
-    const data = await fetchAgentContext();
-    setContext(data);
-    setIsBusy(false);
+    setError(null);
+
+    try {
+      const data = await fetchAgentContext();
+      setContext(data);
+    } catch (error) {
+      setError(buildAgentError(error, "Nao foi possivel carregar o contexto do agente agora."));
+    } finally {
+      setIsBusy(false);
+    }
   }
 
   useEffect(() => {
-    refreshContext()
-      .then(() => setError(null))
-      .catch(() => {
-        setError("Nao foi possivel carregar o contexto do agente agora.");
-        setIsBusy(false);
-      });
+    void refreshContext();
   }, []);
 
-  function updateForm<K extends keyof AgentFormState>(key: K, value: AgentFormState[K]) {
-    setForm((current) => ({ ...current, [key]: value }));
+  function updateChatForm<K extends keyof AgentChatFormState>(key: K, value: AgentChatFormState[K]) {
+    setChatForm((current) => ({ ...current, [key]: value }));
   }
 
-  async function handleCreateAgentPlan(event: FormEvent<HTMLFormElement>) {
+  async function handleChatSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!form.briefing.trim()) {
-      setError("Envie um briefing no chat para o GPT montar o planejamento completo.");
+    const message = chatForm.message.trim();
+    if (!message) {
+      setError("Escreva uma mensagem para o agente antes de enviar.");
       return;
     }
 
-    setIsBusy(true);
-    setFeedback(null);
-    setError(null);
-
-    const composedBriefing = buildChatBriefing(form, focusAreas);
-    const payload: AgentPlanInput = {
-      briefing: composedBriefing,
-      constraints: {
-        availableHoursPerDay: Math.max(1, Number(form.availableHoursPerDay)),
-        fixedCommitments: form.fixedCommitments
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
-        energyPattern: form.energyPattern,
-      },
-      plan: {
-        planningHorizon: form.planningHorizon,
-      },
+    const userEntry: ChatEntry = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      title: "Voce",
+      body: message,
     };
 
-    try {
-      const result = await createAgentPlan(payload);
-      setLatestPlan(result);
-      const generatorLabel = result.generator === "openai" ? "com OpenAI" : "em modo local";
-      const notes =
-        result.assistantNotes.length > 0 ? ` Ajustes do agente: ${result.assistantNotes.join(" | ")}.` : "";
-      setFeedback(
-        `Planejamento completo ${generatorLabel} aplicado no workspace com ${result.routines.length} rotinas e ${result.tasksCreated} tarefas. A API, o banco e o frontend foram atualizados com a nova estrutura.${notes}`,
-      );
-      setForm({
-        ...initialAgentForm,
-        availableHoursPerDay: form.availableHoursPerDay,
-        energyPattern: form.energyPattern,
-      });
-      await refreshContext();
-      router.refresh();
-    } catch (error) {
-      setError(buildAgentError(error, "Nao foi possivel gerar o plano assistido agora."));
-      setIsBusy(false);
-    }
-  }
-
-  async function handleReplan(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!replanReason.trim()) {
-      setError("Explique rapidamente o motivo do replanejamento.");
-      return;
-    }
-
-    setIsBusy(true);
-    setFeedback(null);
+    setChatEntries((current) => [...current, userEntry]);
+    setIsChatBusy(true);
     setError(null);
 
     try {
-      const result = await requestAgentReplan({
-        reason: replanReason.trim(),
-        planId: context?.activePlan?.id,
+      const focusAreas = splitCsv(chatForm.focusAreas);
+      const fixedCommitments = splitCsv(chatForm.fixedCommitments);
+      const response = await sendAgentChatMessage({
+        message,
+        hints: {
+          planningHorizon: chatForm.planningHorizon,
+          availableHoursPerDay: Number(chatForm.availableHoursPerDay) || 4,
+          energyPattern: chatForm.energyPattern,
+          fixedCommitments,
+          focusAreas,
+        },
       });
-      const notes =
-        result.assistantNotes.length > 0 ? ` Ajustes do agente: ${result.assistantNotes.join(" | ")}.` : "";
-      setFeedback(
-        `Versao ${result.newVersion} criada com ${result.tasksMigrated} tarefas migradas e ${result.routinesCloned} rotinas clonadas.${notes}`,
-      );
-      setReplanReason("");
-      await refreshContext();
-      router.refresh();
+
+      const assistantEntry: ChatEntry = {
+        id: `assistant-${Date.now()}`,
+        role: "assistant",
+        title: "Mestre Horus",
+        body: response.assistantReply,
+        meta: response.mutationSummary || buildAssistantMeta(response),
+        questions: response.questions,
+        blueprintSummary: buildBlueprintSummary(response),
+      };
+
+      setChatEntries((current) => [...current, assistantEntry]);
+      setContext(response.context);
+      setChatForm((current) => ({ ...current, message: "" }));
     } catch (error) {
-      setError(buildAgentError(error, "Nao foi possivel pedir um replanejamento agora."));
-      setIsBusy(false);
+      setChatEntries((current) => current.filter((entry) => entry.id !== userEntry.id));
+      setError(buildAgentError(error, "Nao foi possivel conversar com o agente agora."));
+    } finally {
+      setIsChatBusy(false);
     }
   }
 
@@ -215,10 +206,10 @@ export function AgentOperationsPanel() {
     <section className="surface-card">
       <div className="surface-card-head">
         <div>
-          <div className="surface-eyebrow">Agent Planner</div>
-          <h2>Planejamento assistido</h2>
+          <div className="surface-eyebrow">GPT Actions</div>
+          <h2>Integração com ChatGPT</h2>
         </div>
-        <span className="surface-action">Transforme um briefing em objetivo, plano, rotinas e tarefas</span>
+        <span className="surface-action">O plano nasce no GPT e entra no Horus via API</span>
       </div>
 
       <div className="surface-card-body">
@@ -233,141 +224,258 @@ export function AgentOperationsPanel() {
               <strong>{summary.routines}</strong>
             </article>
             <article className="operations-summary-card">
-              <span>Consistencia</span>
-              <strong>{summary.consistencyScore}</strong>
+              <span>Tarefas no sistema</span>
+              <strong>{summary.tasks}</strong>
             </article>
           </div>
 
           <div className="operations-grid agent-operations-grid">
-            <form className="task-quick-form" onSubmit={handleCreateAgentPlan}>
+            <article className="task-quick-form">
               <div className="task-quick-form-head">
-                <strong>Chat de planejamento</strong>
-                <span>Escreva livremente. O GPT transforma o briefing em objetivo, plano, rotinas e tarefas.</span>
+                <strong>Configuração no GPT Builder</strong>
+                <span>
+                  Crie o agente dentro do ChatGPT, adicione uma Action e importe o schema abaixo.
+                </span>
               </div>
 
-              <label>
-                <span>Mensagem para o GPT</span>
-                <textarea
-                  value={form.briefing}
-                  onChange={(event) => updateForm("briefing", event.target.value)}
-                  placeholder="Ex: tenho prova de calculo em 12 dias, biologia em 18 dias e preciso conciliar estagio a tarde. Quero um planejamento completo com rotinas, tarefas diarias, revisoes e distribuicao de carga nas proximas 3 semanas."
-                  rows={7}
-                  required
-                />
-              </label>
-
-              <label>
-                <span>Areas de foco opcionais</span>
-                <input
-                  value={form.focusAreas}
-                  onChange={(event) => updateForm("focusAreas", event.target.value)}
-                  placeholder="Ex: Biologia, Calculo, Redacao"
-                />
-              </label>
-
-              <div className="task-quick-form-row">
-                <label>
-                  <span>Horizonte desejado</span>
-                  <select
-                    value={form.planningHorizon}
-                    onChange={(event) => updateForm("planningHorizon", event.target.value)}
-                  >
-                    <option value="daily">Diario</option>
-                    <option value="weekly">Semanal</option>
-                    <option value="biweekly">Quinzenal</option>
-                    <option value="monthly">Mensal</option>
-                  </select>
-                </label>
-
-                <label>
-                  <span>Horas disponiveis por dia</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="12"
-                    step="1"
-                    value={form.availableHoursPerDay}
-                    onChange={(event) => updateForm("availableHoursPerDay", event.target.value)}
-                    required
-                  />
-                </label>
-
-                <label>
-                  <span>Padrao de energia</span>
-                  <select
-                    value={form.energyPattern}
-                    onChange={(event) => updateForm("energyPattern", event.target.value)}
-                  >
-                    {Object.entries(energyPatternLabels).map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+              <div className="agent-context-grid">
+                <div className="secondary-row">
+                  <span>OpenAPI schema</span>
+                  <strong>{actionSchemaUrl}</strong>
+                </div>
+                <div className="secondary-row">
+                  <span>Endpoint de publicação</span>
+                  <strong>{publishEndpoint}</strong>
+                </div>
+                <div className="secondary-row">
+                  <span>Autenticação</span>
+                  <strong>API key no header x-horus-action-key</strong>
+                </div>
               </div>
 
-              <label>
-                <span>Compromissos fixos</span>
-                <input
-                  value={form.fixedCommitments}
-                  onChange={(event) => updateForm("fixedCommitments", event.target.value)}
-                  placeholder="Ex: Aula 08:00, Estagio 14:00, Academia 19:00"
-                />
-              </label>
+              <div className="planner-empty-state">
+                No GPT Builder, use autenticação por API key com header customizado
+                x-horus-action-key. A API espera a mesma chave em HORUS_GPT_ACTION_KEY.
+              </div>
 
-              <button className="task-submit-button" type="submit" disabled={isBusy}>
-                {isBusy ? "Planejando..." : "Enviar para o GPT e aplicar no workspace"}
+              <button className="task-submit-button" type="button" onClick={refreshContext} disabled={isBusy}>
+                {isBusy ? "Atualizando..." : "Atualizar dados recebidos"}
               </button>
-            </form>
+            </article>
 
             <div className="operations-task-stack">
               <article className="operations-task-card">
                 <div className="operations-task-head">
                   <div>
-                    <strong>Plano gerado pelo GPT</strong>
-                    <span>
-                      Estrutura que sera salva na API, persistida no banco e refletida no dashboard
-                      {context?.assistant
-                        ? ` · ${context.assistant.enabled ? `OpenAI ativa (${context.assistant.model})` : "modo local ativo"}`
-                        : ""}
-                    </span>
+                    <strong>Chat operacional</strong>
+                    <span>Teste o agente dentro do app e veja mutacoes aplicadas no workspace</span>
                   </div>
                 </div>
 
-                <div className="agent-routine-list">
-                  {latestPlan?.planningBlueprint.plan.routines?.length ? (
-                    latestPlan.planningBlueprint.plan.routines.map((routine) => (
-                      <article key={routine.name} className="agent-routine-card">
-                        <div className="agent-routine-head">
-                          <strong>{routine.name}</strong>
-                          <span>{routine.timePreference}</span>
-                        </div>
-                        <div className="stacked-insights">
-                          {(routine.tasks ?? []).map((task) => (
-                            <div key={task.title} className="insight-row">
-                              <span className="sidebar-dot" />
-                              <span>{task.title}</span>
-                            </div>
+                <div className="agent-live-chat">
+                  <div className="agent-chat-log agent-live-chat-log">
+                    {chatEntries.length ? (
+                      chatEntries.map((entry) => (
+                        <article
+                          key={entry.id}
+                          className={`agent-chat-entry ${entry.role === "user" ? "from-user" : "from-assistant"}`}
+                        >
+                          <div className={`agent-chat-bubble ${entry.role}`}>
+                            <strong>{entry.title}</strong>
+                            <p>{entry.body}</p>
+                            {entry.meta ? <em>{entry.meta}</em> : null}
+                            {entry.blueprintSummary?.length ? (
+                              <div className="agent-question-list">
+                                {entry.blueprintSummary.map((item) => (
+                                  <span key={item}>{item}</span>
+                                ))}
+                              </div>
+                            ) : null}
+                            {entry.questions?.length ? (
+                              <div className="agent-question-list">
+                                {entry.questions.map((question) => (
+                                  <span key={question}>{question}</span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        </article>
+                      ))
+                    ) : (
+                      <div className="planner-empty-state">
+                        Envie um pedido como "crie uma tarefa para revisar biologia amanha as 09:00" ou
+                        "monte um plano semanal de estudos com 3 horas por dia".
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="quick-action-row">
+                    {suggestedPrompts.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        className="ghost-chip"
+                        onClick={() => updateChatForm("message", prompt)}
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+
+                  <form className="agent-chat-form" onSubmit={handleChatSubmit}>
+                    <label>
+                      <span>Mensagem para o agente</span>
+                      <textarea
+                        value={chatForm.message}
+                        onChange={(event) => updateChatForm("message", event.target.value)}
+                        placeholder="Descreva o que voce quer planejar, criar, atualizar ou replanejar."
+                      />
+                    </label>
+
+                    <div className="task-quick-form-row">
+                      <label>
+                        <span>Horizonte</span>
+                        <select
+                          value={chatForm.planningHorizon}
+                          onChange={(event) => updateChatForm("planningHorizon", event.target.value)}
+                        >
+                          <option value="daily">Diario</option>
+                          <option value="weekly">Semanal</option>
+                          <option value="biweekly">Quinzenal</option>
+                          <option value="monthly">Mensal</option>
+                        </select>
+                      </label>
+
+                      <label>
+                        <span>Horas por dia</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="16"
+                          value={chatForm.availableHoursPerDay}
+                          onChange={(event) => updateChatForm("availableHoursPerDay", event.target.value)}
+                        />
+                      </label>
+
+                      <label>
+                        <span>Energia</span>
+                        <select
+                          value={chatForm.energyPattern}
+                          onChange={(event) => updateChatForm("energyPattern", event.target.value)}
+                        >
+                          {Object.entries(energyPatternLabels).map(([value, label]) => (
+                            <option key={value} value={value}>
+                              {label}
+                            </option>
                           ))}
-                        </div>
-                      </article>
-                    ))
-                  ) : (
-                    <div className="planner-empty-state">
-                      Envie um briefing no chat. O GPT vai devolver o planejamento completo e ele aparecera aqui assim que for aplicado.
+                        </select>
+                      </label>
                     </div>
-                  )}
+
+                    <div className="task-quick-form-row">
+                      <label>
+                        <span>Areas de foco</span>
+                        <input
+                          type="text"
+                          value={chatForm.focusAreas}
+                          onChange={(event) => updateChatForm("focusAreas", event.target.value)}
+                          placeholder="matematica, biologia, projeto final"
+                        />
+                      </label>
+
+                      <label>
+                        <span>Compromissos fixos</span>
+                        <input
+                          type="text"
+                          value={chatForm.fixedCommitments}
+                          onChange={(event) => updateChatForm("fixedCommitments", event.target.value)}
+                          placeholder="aula 08:00, trabalho 14:00"
+                        />
+                      </label>
+                    </div>
+
+                    <button type="submit" disabled={isChatBusy || !context?.assistant?.enabled}>
+                      {isChatBusy ? "Enviando..." : "Conversar com o agente"}
+                    </button>
+                  </form>
+
+                  <div className="agent-context-grid">
+                    <div className="secondary-row">
+                      <span>Assistente interno</span>
+                      <strong>
+                        {context?.assistant?.enabled
+                          ? `${context.assistant.provider} · ${context.assistant.model}`
+                          : "OpenAI nao configurado"}
+                      </strong>
+                    </div>
+                    <div className="secondary-row">
+                      <span>Plano ativo</span>
+                      <strong>{context?.activePlan?.title ?? "Nenhum agora"}</strong>
+                    </div>
+                    {!context?.assistant?.enabled ? (
+                      <div className="planner-empty-state">
+                        Configure `OPENAI_API_KEY` no backend para habilitar interpretacao conversacional completa.
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </article>
 
               <article className="operations-task-card">
                 <div className="operations-task-head">
                   <div>
-                    <strong>Historico do agente</strong>
-                    <span>
-                      Conversas e planejamentos recentes enviados para o workspace
-                    </span>
+                    <strong>Fluxo esperado</strong>
+                    <span>Responsabilidades separadas entre ChatGPT, API e frontend</span>
+                  </div>
+                </div>
+
+                <div className="agent-routine-list">
+                  <article className="agent-routine-card">
+                    <div className="agent-routine-head">
+                      <strong>1. ChatGPT</strong>
+                      <span>conversa</span>
+                    </div>
+                    <div className="stacked-insights">
+                      <div className="insight-row">
+                        <span className="sidebar-dot" />
+                        <span>Voce conversa com o GPT e ele monta objetivo, plano, rotinas e tarefas.</span>
+                      </div>
+                    </div>
+                  </article>
+
+                  <article className="agent-routine-card">
+                    <div className="agent-routine-head">
+                      <strong>2. API Horus</strong>
+                      <span>persistencia</span>
+                    </div>
+                    <div className="stacked-insights">
+                      <div className="insight-row">
+                        <span className="sidebar-dot" />
+                        <span>A Action envia o JSON estruturado para o endpoint e o backend salva no banco.</span>
+                      </div>
+                    </div>
+                  </article>
+
+                  <article className="agent-routine-card">
+                    <div className="agent-routine-head">
+                      <strong>3. Frontend</strong>
+                      <span>visualizacao</span>
+                    </div>
+                    <div className="stacked-insights">
+                      <div className="insight-row">
+                        <span className="sidebar-dot" />
+                        <span>O dashboard atualiza e apresenta metas, planos, rotinas e tarefas geradas.</span>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+              </article>
+
+              <article className="operations-task-card">
+                <div className="operations-task-head">
+                  <div>
+                    <strong>Historico recebido</strong>
+                    <span>Ultimos planejamentos publicados por agente externo</span>
                   </div>
                 </div>
 
@@ -375,19 +483,16 @@ export function AgentOperationsPanel() {
                   {context?.recentSessions?.length ? (
                     context.recentSessions.map((session) => (
                       <article key={session.id} className="agent-chat-entry">
-                        <div className="agent-chat-bubble user">
-                          <strong>Voce</strong>
-                          <p>{session.inputSummary}</p>
-                        </div>
                         <div className="agent-chat-bubble assistant">
-                          <strong>GPT</strong>
-                          <p>{session.outputSummary}</p>
+                          <strong>GPT externo</strong>
+                          <p>{session.inputSummary}</p>
+                          <em>{session.outputSummary}</em>
                           <span>{session.createdAt.slice(0, 16).replace("T", " ")}</span>
                         </div>
                       </article>
                     ))
                   ) : (
-                    <div className="planner-empty-state">Nenhuma conversa com o agente registrada ainda.</div>
+                    <div className="planner-empty-state">Nenhum planejamento recebido por Action ainda.</div>
                   )}
                 </div>
 
@@ -397,43 +502,18 @@ export function AgentOperationsPanel() {
                     <strong>{context?.activePlan?.title ?? "Nenhum agora"}</strong>
                   </div>
                   <div className="secondary-row">
-                    <span>Tarefas no sistema</span>
-                    <strong>{summary.tasks}</strong>
+                    <span>Consistencia</span>
+                    <strong>{summary.consistencyScore}</strong>
                   </div>
                   <div className="secondary-row">
                     <span>Taxa de conclusao</span>
-                    <strong>{context?.metrics.completionRate ?? 0}%</strong>
-                  </div>
-                  <div className="secondary-row">
-                    <span>Assistente</span>
-                    <strong>
-                      {context?.assistant?.enabled
-                        ? `OpenAI · ${context.assistant.model}`
-                        : "Fallback local"}
-                    </strong>
+                    <strong>{context?.metrics?.completionRate ?? 0}%</strong>
                   </div>
                 </div>
-
-                <form className="agent-replan-form" onSubmit={handleReplan}>
-                  <label>
-                    <span>Motivo para replanejar</span>
-                    <textarea
-                      value={replanReason}
-                      onChange={(event) => setReplanReason(event.target.value)}
-                      placeholder="Ex: muitas tarefas ficaram acumuladas na noite e preciso redistribuir a carga"
-                      rows={3}
-                    />
-                  </label>
-
-                  <button type="submit" disabled={isBusy}>
-                    Solicitar replanejamento
-                  </button>
-                </form>
               </article>
             </div>
           </div>
 
-          {feedback ? <div className="operation-feedback success">{feedback}</div> : null}
           {error ? <div className="operation-feedback error">{error}</div> : null}
         </div>
       </div>
