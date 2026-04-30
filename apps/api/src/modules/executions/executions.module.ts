@@ -15,8 +15,10 @@ class StopExecutionDto {
   @IsString()
   taskId!: string;
 
+  @IsOptional()
   @IsNumber()
-  actualMinutes!: number;
+  @Min(0)
+  actualMinutes?: number;
 
   @IsOptional()
   @IsString()
@@ -62,8 +64,9 @@ class ExecutionsController {
   }
 
   @Post("stop")
-  stop(@Body() payload: StopExecutionDto) {
-    return this.database.stopExecution(payload.taskId, payload.actualMinutes, payload.notes);
+  async stop(@Headers("authorization") authorization: string | undefined, @Body() payload: StopExecutionDto) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.stopExecution(userId, payload.taskId, payload.actualMinutes, payload.notes);
   }
 
   @Post("log")

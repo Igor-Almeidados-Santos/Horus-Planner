@@ -48,8 +48,9 @@ class RoutinesController {
   }
 
   @Get(":id")
-  findOne(@Param("id") id: string) {
-    return this.database.getRoutine(id);
+  async findOne(@Headers("authorization") authorization: string | undefined, @Param("id") id: string) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.getRoutine(userId, id);
   }
 
   @Post()
@@ -59,13 +60,19 @@ class RoutinesController {
   }
 
   @Patch(":id")
-  update(@Param("id") id: string, @Body() payload: UpdateRoutineDto) {
-    return this.database.updateRoutine(id, payload);
+  async update(
+    @Headers("authorization") authorization: string | undefined,
+    @Param("id") id: string,
+    @Body() payload: UpdateRoutineDto,
+  ) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.updateRoutine(userId, id, payload);
   }
 
   @Delete(":id")
-  remove(@Param("id") id: string) {
-    return this.database.deleteRoutine(id);
+  async remove(@Headers("authorization") authorization: string | undefined, @Param("id") id: string) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.deleteRoutine(userId, id);
   }
 }
 

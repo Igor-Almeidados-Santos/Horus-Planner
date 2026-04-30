@@ -921,6 +921,12 @@ th {
   font-weight: 600;
 }
 
+.task-submit-button.secondary {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-color: rgba(255, 224, 194, 0.12);
+}
+
 .task-submit-button:disabled,
 .operations-task-actions button:disabled {
   opacity: 0.6;
@@ -1319,6 +1325,21 @@ th {
   color: #f1c7c1;
   background: rgba(157, 77, 70, 0.18);
   border-color: rgba(232, 156, 145, 0.18);
+}
+
+.workspace-unavailable-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.workspace-unavailable-actions a {
+  color: var(--accent-soft);
+  text-decoration: none;
+}
+
+.workspace-unavailable-actions a:hover {
+  text-decoration: underline;
 }
 
 .auth-page {

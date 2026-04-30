@@ -107,8 +107,9 @@ class TasksController {
   }
 
   @Get(":id")
-  findOne(@Param("id") id: string) {
-    return this.database.getTask(id);
+  async findOne(@Headers("authorization") authorization: string | undefined, @Param("id") id: string) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.getTask(userId, id);
   }
 
   @Post()
@@ -118,18 +119,29 @@ class TasksController {
   }
 
   @Patch(":id")
-  update(@Param("id") id: string, @Body() payload: UpdateTaskDto) {
-    return this.database.updateTask(id, payload);
+  async update(
+    @Headers("authorization") authorization: string | undefined,
+    @Param("id") id: string,
+    @Body() payload: UpdateTaskDto,
+  ) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.updateTask(userId, id, payload);
   }
 
   @Patch(":id/status")
-  updateStatus(@Param("id") id: string, @Body() payload: UpdateTaskStatusDto) {
-    return this.database.updateTaskStatus(id, payload.status);
+  async updateStatus(
+    @Headers("authorization") authorization: string | undefined,
+    @Param("id") id: string,
+    @Body() payload: UpdateTaskStatusDto,
+  ) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.updateTaskStatus(userId, id, payload.status);
   }
 
   @Delete(":id")
-  remove(@Param("id") id: string) {
-    return this.database.deleteTask(id);
+  async remove(@Headers("authorization") authorization: string | undefined, @Param("id") id: string) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.deleteTask(userId, id);
   }
 }
 

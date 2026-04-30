@@ -245,6 +245,19 @@ export class FirebaseDataService {
     return snapshot.data() as T;
   }
 
+  private async getOwnedDoc<T extends { id: string; userId: string }>(
+    collectionName: string,
+    id: string,
+    userId: string,
+  ): Promise<T> {
+    const value = await this.getDoc<T>(collectionName, id);
+    if (value.userId !== userId) {
+      throw new UnauthorizedException(`${collectionName} ${id} does not belong to the authenticated user`);
+    }
+
+    return value;
+  }
+
   private async listByUser<T extends { userId: string }>(collectionName: string, userId: string): Promise<T[]> {
     const snapshot = await this.collection<T>(collectionName).where("userId", "==", userId).get();
     return snapshot.docs.map((doc) => doc.data() as T);
@@ -319,6 +332,65 @@ export class FirebaseDataService {
     };
     await reference.set(nextValue);
     return nextValue;
+  }
+
+  private async updateOwnedDoc<T extends { id: string; userId: string }>(
+    collectionName: string,
+    id: string,
+    userId: string,
+    payload: Partial<T>,
+  ) {
+    await this.getOwnedDoc<T>(collectionName, id, userId);
+    return this.updateDoc<T>(collectionName, id, payload);
+  }
+
+  private async deleteOwnedDoc<T extends { id: string; userId: string }>(
+    collectionName: string,
+    id: string,
+    userId: string,
+  ) {
+    await this.getOwnedDoc<T>(collectionName, id, userId);
+    await this.collection<T>(collectionName).doc(id).delete();
+    return { success: true };
+  }
+
+  private getExecutionDurationMinutes(execution: Pick<ExecutionRecord, "startedAt">, fallbackMinutes = 0) {
+    if (!execution.startedAt) {
+      return fallbackMinutes;
+    }
+
+    const startedAtMs = Date.parse(execution.startedAt);
+    if (Number.isNaN(startedAtMs)) {
+      return fallbackMinutes;
+    }
+
+    const elapsedMs = Date.now() - startedAtMs;
+    const elapsedMinutes = Math.round(elapsedMs / 60000);
+    return Math.max(fallbackMinutes, elapsedMinutes, 0);
+  }
+
+  private async findActiveExecutionForTask(userId: string, taskId: string) {
+    const entries = await this.listByField<ExecutionRecord>("executionLogs", "taskId", taskId);
+    return entries.find((item) => item.userId === userId && !item.endedAt) ?? null;
+  }
+
+  private async closeActiveExecutionForTask(
+    userId: string,
+    taskId: string,
+    nextStatus: TaskStatus,
+    overrides?: { actualMinutes?: number; notes?: string },
+  ) {
+    const active = await this.findActiveExecutionForTask(userId, taskId);
+    if (!active) {
+      return null;
+    }
+
+    return this.updateDoc<ExecutionRecord>("executionLogs", active.id, {
+      endedAt: this.now(),
+      actualMinutes: overrides?.actualMinutes ?? this.getExecutionDurationMinutes(active, active.actualMinutes),
+      status: nextStatus,
+      notes: overrides?.notes ?? active.notes,
+    });
   }
 
   private getDefaultUserId() {
@@ -1107,8 +1179,8 @@ export class FirebaseDataService {
     return this.listByUser<GoalRecord>("goals", userId);
   }
 
-  async getGoal(id: string) {
-    return this.getDoc<GoalRecord>("goals", id);
+  async getGoal(userId: string, id: string) {
+    return this.getOwnedDoc<GoalRecord>("goals", id, userId);
   }
 
   async createGoal(
@@ -1127,16 +1199,15 @@ export class FirebaseDataService {
     return this.setDoc("goals", goal);
   }
 
-  async updateGoal(id: string, payload: Partial<Omit<GoalRecord, "id" | "userId" | "createdAt">>) {
-    return this.updateDoc<GoalRecord>("goals", id, {
+  async updateGoal(userId: string, id: string, payload: Partial<Omit<GoalRecord, "id" | "userId" | "createdAt">>) {
+    return this.updateOwnedDoc<GoalRecord>("goals", id, userId, {
       ...payload,
       updatedAt: this.now(),
     });
   }
 
-  async deleteGoal(id: string) {
-    await this.collection<GoalRecord>("goals").doc(id).delete();
-    return { success: true };
+  async deleteGoal(userId: string, id: string) {
+    return this.deleteOwnedDoc<GoalRecord>("goals", id, userId);
   }
 
   async getPlans(userId: string) {
@@ -1151,10 +1222,14 @@ export class FirebaseDataService {
     }));
   }
 
-  async getPlan(id: string) {
-    const plan = await this.getDoc<PlanRecord>("plans", id);
-    const routines = await this.listByField<RoutineRecord>("routines", "planId", id);
-    const tasks = await this.listByField<TaskRecord>("tasks", "planId", id);
+  async getPlan(userId: string, id: string) {
+    const plan = await this.getOwnedDoc<PlanRecord>("plans", id, userId);
+    const routines = (await this.listByField<RoutineRecord>("routines", "planId", id)).filter(
+      (routine) => routine.userId === userId,
+    );
+    const tasks = (await this.listByField<TaskRecord>("tasks", "planId", id)).filter(
+      (task) => task.userId === userId,
+    );
     return {
       ...plan,
       routines,
@@ -1168,6 +1243,10 @@ export class FirebaseDataService {
       version?: number;
     },
   ) {
+    if (payload.goalId) {
+      await this.getOwnedDoc<GoalRecord>("goals", payload.goalId, userId);
+    }
+
     const now = this.now();
     const plan: PlanRecord = {
       id: randomUUID(),
@@ -1180,20 +1259,20 @@ export class FirebaseDataService {
     return this.setDoc("plans", plan);
   }
 
-  async updatePlan(id: string, payload: Partial<Omit<PlanRecord, "id" | "userId" | "createdAt">>) {
-    const current = await this.getDoc<PlanRecord>("plans", id);
+  async updatePlan(userId: string, id: string, payload: Partial<Omit<PlanRecord, "id" | "userId" | "createdAt">>) {
+    const current = await this.getOwnedDoc<PlanRecord>("plans", id, userId);
     const structuralFields: Array<keyof typeof payload> = ["title", "description", "planningHorizon", "source"];
     const versionIncrement = structuralFields.some((field) => payload[field] !== undefined) ? 1 : 0;
 
-    return this.updateDoc<PlanRecord>("plans", id, {
+    return this.updateOwnedDoc<PlanRecord>("plans", id, userId, {
       ...payload,
       version: current.version + versionIncrement,
       updatedAt: this.now(),
     });
   }
 
-  async activatePlan(id: string) {
-    const plan = await this.getDoc<PlanRecord>("plans", id);
+  async activatePlan(userId: string, id: string) {
+    const plan = await this.getOwnedDoc<PlanRecord>("plans", id, userId);
     const plans = await this.listByUser<PlanRecord>("plans", plan.userId);
     await Promise.all(
       plans.map((item) =>
@@ -1203,20 +1282,22 @@ export class FirebaseDataService {
         }),
       ),
     );
-    return this.getPlan(id);
+    return this.getPlan(userId, id);
   }
 
-  async archivePlan(id: string) {
-    return this.updatePlan(id, { status: "ARCHIVED" });
+  async archivePlan(userId: string, id: string) {
+    return this.updatePlan(userId, id, { status: "ARCHIVED" });
   }
 
   async getRoutines(userId: string) {
     return this.listByUser<RoutineRecord>("routines", userId);
   }
 
-  async getRoutine(id: string) {
-    const routine = await this.getDoc<RoutineRecord>("routines", id);
-    const tasks = await this.listByField<TaskRecord>("tasks", "routineId", id);
+  async getRoutine(userId: string, id: string) {
+    const routine = await this.getOwnedDoc<RoutineRecord>("routines", id, userId);
+    const tasks = (await this.listByField<TaskRecord>("tasks", "routineId", id)).filter(
+      (task) => task.userId === userId,
+    );
     return {
       ...routine,
       tasks,
@@ -1227,6 +1308,8 @@ export class FirebaseDataService {
     userId: string,
     payload: Omit<RoutineRecord, "id" | "userId" | "createdAt" | "updatedAt">,
   ) {
+    await this.getOwnedDoc<PlanRecord>("plans", payload.planId, userId);
+
     const now = this.now();
     const routine: RoutineRecord = {
       id: randomUUID(),
@@ -1238,25 +1321,30 @@ export class FirebaseDataService {
     return this.setDoc("routines", routine);
   }
 
-  async updateRoutine(id: string, payload: Partial<Omit<RoutineRecord, "id" | "userId" | "createdAt">>) {
-    return this.updateDoc<RoutineRecord>("routines", id, {
+  async updateRoutine(
+    userId: string,
+    id: string,
+    payload: Partial<Omit<RoutineRecord, "id" | "userId" | "createdAt">>,
+  ) {
+    return this.updateOwnedDoc<RoutineRecord>("routines", id, userId, {
       ...payload,
       updatedAt: this.now(),
     });
   }
 
-  async deleteRoutine(id: string) {
-    await this.collection<RoutineRecord>("routines").doc(id).delete();
-    return { success: true };
+  async deleteRoutine(userId: string, id: string) {
+    return this.deleteOwnedDoc<RoutineRecord>("routines", id, userId);
   }
 
   async getTasks(userId: string) {
     return this.listByUser<TaskRecord>("tasks", userId);
   }
 
-  async getTask(id: string) {
-    const task = await this.getDoc<TaskRecord>("tasks", id);
-    const executionLogs = await this.listByField<ExecutionRecord>("executionLogs", "taskId", id);
+  async getTask(userId: string, id: string) {
+    const task = await this.getOwnedDoc<TaskRecord>("tasks", id, userId);
+    const executionLogs = (await this.listByField<ExecutionRecord>("executionLogs", "taskId", id)).filter(
+      (execution) => execution.userId === userId,
+    );
     return {
       ...task,
       executionLogs,
@@ -1267,6 +1355,14 @@ export class FirebaseDataService {
     userId: string,
     payload: Omit<TaskRecord, "id" | "userId" | "createdAt" | "updatedAt">,
   ) {
+    const plan = await this.getOwnedDoc<PlanRecord>("plans", payload.planId, userId);
+    if (payload.routineId) {
+      const routine = await this.getOwnedDoc<RoutineRecord>("routines", payload.routineId, userId);
+      if (routine.planId !== plan.id) {
+        throw new BadRequestException("Routine does not belong to the provided plan");
+      }
+    }
+
     const now = this.now();
     const task: TaskRecord = {
       id: randomUUID(),
@@ -1278,24 +1374,50 @@ export class FirebaseDataService {
     return this.setDoc("tasks", task);
   }
 
-  async updateTask(id: string, payload: Partial<Omit<TaskRecord, "id" | "userId" | "createdAt">>) {
-    return this.updateDoc<TaskRecord>("tasks", id, {
+  async updateTask(userId: string, id: string, payload: Partial<Omit<TaskRecord, "id" | "userId" | "createdAt">>) {
+    const current = await this.getOwnedDoc<TaskRecord>("tasks", id, userId);
+    if (payload.planId) {
+      await this.getOwnedDoc<PlanRecord>("plans", payload.planId, userId);
+    }
+
+    const resolvedPlanId = payload.planId ?? current.planId;
+    if (payload.routineId) {
+      const routine = await this.getOwnedDoc<RoutineRecord>("routines", payload.routineId, userId);
+      if (routine.planId !== resolvedPlanId) {
+        throw new BadRequestException("Routine does not belong to the provided plan");
+      }
+    }
+
+    return this.updateOwnedDoc<TaskRecord>("tasks", id, userId, {
       ...payload,
       updatedAt: this.now(),
     });
   }
 
-  async updateTaskStatus(id: string, status: TaskStatus) {
-    return this.updateTask(id, { status });
+  async updateTaskStatus(userId: string, id: string, status: TaskStatus) {
+    if (["PAUSED", "BLOCKED", "DONE", "CANCELED", "ARCHIVED"].includes(status)) {
+      await this.closeActiveExecutionForTask(userId, id, status);
+    }
+
+    return this.updateTask(userId, id, { status });
   }
 
-  async deleteTask(id: string) {
-    await this.collection<TaskRecord>("tasks").doc(id).delete();
-    return { success: true };
+  async deleteTask(userId: string, id: string) {
+    return this.deleteOwnedDoc<TaskRecord>("tasks", id, userId);
   }
 
   async startExecution(userId: string, taskId: string, notes?: string) {
-    await this.updateTaskStatus(taskId, "IN_PROGRESS");
+    const task = await this.getOwnedDoc<TaskRecord>("tasks", taskId, userId);
+    if (["DONE", "CANCELED", "ARCHIVED"].includes(task.status)) {
+      throw new BadRequestException(`Task ${taskId} cannot start execution from status ${task.status}`);
+    }
+
+    const activeExecution = await this.findActiveExecutionForTask(userId, taskId);
+    if (activeExecution) {
+      return activeExecution;
+    }
+
+    await this.updateTaskStatus(userId, taskId, "IN_PROGRESS");
 
     const execution: ExecutionRecord = {
       id: randomUUID(),
@@ -1312,21 +1434,18 @@ export class FirebaseDataService {
     return this.setDoc("executionLogs", execution);
   }
 
-  async stopExecution(taskId: string, actualMinutes: number, notes?: string) {
-    const entries = await this.listByField<ExecutionRecord>("executionLogs", "taskId", taskId);
-    const active = entries.find((item) => !item.endedAt);
-    if (!active) {
+  async stopExecution(userId: string, taskId: string, actualMinutes?: number, notes?: string) {
+    await this.getOwnedDoc<TaskRecord>("tasks", taskId, userId);
+    const updated = await this.closeActiveExecutionForTask(userId, taskId, "DONE", {
+      actualMinutes,
+      notes,
+    });
+
+    if (!updated) {
       throw new NotFoundException(`No active execution for task ${taskId}`);
     }
 
-    const updated = await this.updateDoc<ExecutionRecord>("executionLogs", active.id, {
-      endedAt: this.now(),
-      actualMinutes,
-      status: "DONE",
-      notes: notes ?? active.notes,
-    });
-
-    await this.updateTaskStatus(taskId, "DONE");
+    await this.updateTaskStatus(userId, taskId, "DONE");
     return updated;
   }
 
@@ -1334,6 +1453,8 @@ export class FirebaseDataService {
     userId: string,
     payload: Omit<ExecutionRecord, "id" | "userId" | "createdAt">,
   ) {
+    await this.getOwnedDoc<TaskRecord>("tasks", payload.taskId, userId);
+
     const execution: ExecutionRecord = {
       id: randomUUID(),
       userId,
@@ -1428,6 +1549,10 @@ export class FirebaseDataService {
     const now = new Date(`${this.now().slice(0, 10)}T12:00:00.000Z`);
     const todayIso = this.now().slice(0, 10);
     const activePlan = plans.find((plan) => plan.status === "ACTIVE") ?? plans[0] ?? null;
+    if (payload?.planId) {
+      await this.getOwnedDoc<PlanRecord>("plans", payload.planId, userId);
+    }
+
     const planId = payload?.planId ?? activePlan?.id;
     const scopedTasks = planId ? tasks.filter((task) => task.planId === planId) : tasks;
     const scopedTaskIds = new Set(scopedTasks.map((task) => task.id));
@@ -1609,10 +1734,11 @@ export class FirebaseDataService {
   }
 
   async updateRecommendationStatus(
+    userId: string,
     id: string,
     status: RecommendationRecord["status"],
   ) {
-    return this.updateDoc<RecommendationRecord>("recommendations", id, {
+    return this.updateOwnedDoc<RecommendationRecord>("recommendations", id, userId, {
       status,
     });
   }
@@ -1970,7 +2096,7 @@ export class FirebaseDataService {
             );
             const dueDate = new Date(scheduledDate);
             dueDate.setUTCDate(
-              scheduledDate.getUTCDate() + Math.max(1, task.dueDayOffset ?? 2),
+              scheduledDate.getUTCDate() + Math.max(0, task.dueDayOffset ?? 1),
             );
 
             return this.createTask(userId, {

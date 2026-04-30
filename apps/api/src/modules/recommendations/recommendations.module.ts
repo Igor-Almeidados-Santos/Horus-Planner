@@ -24,8 +24,13 @@ class RecommendationsController {
   }
 
   @Patch(":id/status")
-  updateStatus(@Param("id") id: string, @Body() payload: UpdateRecommendationStatusDto) {
-    return this.database.updateRecommendationStatus(id, payload.status);
+  async updateStatus(
+    @Headers("authorization") authorization: string | undefined,
+    @Param("id") id: string,
+    @Body() payload: UpdateRecommendationStatusDto,
+  ) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.updateRecommendationStatus(userId, id, payload.status);
   }
 }
 

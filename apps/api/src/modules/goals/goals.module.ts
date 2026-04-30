@@ -67,8 +67,9 @@ class GoalsController {
   }
 
   @Get(":id")
-  findOne(@Param("id") id: string) {
-    return this.database.getGoal(id);
+  async findOne(@Headers("authorization") authorization: string | undefined, @Param("id") id: string) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.getGoal(userId, id);
   }
 
   @Post()
@@ -78,13 +79,19 @@ class GoalsController {
   }
 
   @Patch(":id")
-  update(@Param("id") id: string, @Body() payload: UpdateGoalDto) {
-    return this.database.updateGoal(id, payload);
+  async update(
+    @Headers("authorization") authorization: string | undefined,
+    @Param("id") id: string,
+    @Body() payload: UpdateGoalDto,
+  ) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.updateGoal(userId, id, payload);
   }
 
   @Delete(":id")
-  remove(@Param("id") id: string) {
-    return this.database.deleteGoal(id);
+  async remove(@Headers("authorization") authorization: string | undefined, @Param("id") id: string) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.deleteGoal(userId, id);
   }
 }
 

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "tsc --noEmit",
-    "test": "node -e \"console.log('No web tests configured yet')\""
+    "test": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"CommonJS\",\"moduleResolution\":\"Node\",\"jsx\":\"preserve\"}' node --test -r ../api/node_modules/ts-node/register/transpile-only test/*.test.ts"
   },
   "dependencies": {
     "next": "^15.3.0",

@@ -59,8 +59,9 @@ class PlansController {
   }
 
   @Get(":id")
-  findOne(@Param("id") id: string) {
-    return this.database.getPlan(id);
+  async findOne(@Headers("authorization") authorization: string | undefined, @Param("id") id: string) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.getPlan(userId, id);
   }
 
   @Post()
@@ -70,18 +71,25 @@ class PlansController {
   }
 
   @Patch(":id")
-  update(@Param("id") id: string, @Body() payload: UpdatePlanDto) {
-    return this.database.updatePlan(id, payload);
+  async update(
+    @Headers("authorization") authorization: string | undefined,
+    @Param("id") id: string,
+    @Body() payload: UpdatePlanDto,
+  ) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.updatePlan(userId, id, payload);
   }
 
   @Post(":id/activate")
-  activate(@Param("id") id: string) {
-    return this.database.activatePlan(id);
+  async activate(@Headers("authorization") authorization: string | undefined, @Param("id") id: string) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.activatePlan(userId, id);
   }
 
   @Post(":id/archive")
-  archive(@Param("id") id: string) {
-    return this.database.archivePlan(id);
+  async archive(@Headers("authorization") authorization: string | undefined, @Param("id") id: string) {
+    const userId = await this.database.resolveUserId(authorization);
+    return this.database.archivePlan(userId, id);
   }
 }
 

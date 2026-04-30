@@ -4,11 +4,13 @@ import { startTransition, useEffect, useMemo, useState, type FormEvent } from "r
 import { useRouter } from "next/navigation";
 import {
   createTask,
+  deleteTask,
   fetchExecutionsToday,
   fetchPlans,
   fetchTasks,
   startExecution,
   stopExecution,
+  updateTask,
   updateTaskStatus,
   type CreateTaskInput,
   type ExecutionLog,
@@ -64,12 +66,36 @@ function priorityLabel(priority: CreateTaskInput["priority"]) {
   }
 }
 
+function parseActualMinutesInput(task: TaskRecord) {
+  const response = window.prompt(
+    `Quantos minutos reais voce executou em "${task.title}"?`,
+    String(task.estimatedMinutes),
+  );
+
+  if (response === null) {
+    return { cancelled: true, actualMinutes: undefined as number | undefined };
+  }
+
+  const trimmed = response.trim();
+  if (!trimmed) {
+    return { cancelled: false, actualMinutes: undefined as number | undefined };
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return { cancelled: false, actualMinutes: null as number | null };
+  }
+
+  return { cancelled: false, actualMinutes: Math.round(parsed) };
+}
+
 export function TaskOperationsPanel() {
   const router = useRouter();
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [plans, setPlans] = useState<PlanSummary[]>([]);
   const [executions, setExecutions] = useState<ExecutionLog[]>([]);
   const [form, setForm] = useState<QuickFormState>(initialFormState);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -142,10 +168,32 @@ export function TaskOperationsPanel() {
     setForm((current) => ({ ...current, [key]: value }));
   }
 
+  function handleEditTask(task: TaskRecord) {
+    setError(null);
+    setFeedback(null);
+    setEditingTaskId(task.id);
+    setForm({
+      title: task.title,
+      subject: task.subject,
+      estimatedMinutes: String(task.estimatedMinutes),
+      scheduledDate: task.scheduledDate,
+      scheduledTime: task.scheduledTime ?? "",
+      dueDate: task.dueDate,
+      priority: task.priority,
+    });
+  }
+
+  function resetTaskForm() {
+    setEditingTaskId(null);
+    setForm(initialFormState);
+  }
+
   function handleCreateTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!activePlan) {
+    const editingTask = editingTaskId ? tasks.find((task) => task.id === editingTaskId) ?? null : null;
+
+    if (!editingTaskId && !activePlan) {
       setError("Nenhum plano encontrado para vincular a nova tarefa.");
       return;
     }
@@ -154,29 +202,73 @@ export function TaskOperationsPanel() {
     setFeedback(null);
     setIsBusy(true);
 
-    createTask({
-      planId: activePlan.id,
-      routineId: undefined,
-      title: form.title.trim(),
-      description: `${form.subject.trim()} · criado pela central operacional`,
-      category: "STUDY",
-      priority: form.priority,
-      difficulty: "MEDIUM",
-      status: "TODO",
-      estimatedMinutes: Number(form.estimatedMinutes),
-      scheduledDate: form.scheduledDate,
-      scheduledTime: form.scheduledTime || undefined,
-      dueDate: form.dueDate,
-      subject: form.subject.trim(),
-    })
+    const request = editingTaskId
+      ? updateTask(editingTaskId, {
+          title: form.title.trim(),
+          description: `${form.subject.trim()} · atualizado pela central operacional`,
+          priority: form.priority,
+          estimatedMinutes: Number(form.estimatedMinutes),
+          scheduledDate: form.scheduledDate,
+          scheduledTime: form.scheduledTime || undefined,
+          dueDate: form.dueDate,
+          subject: form.subject.trim(),
+          category: editingTask?.category ?? "STUDY",
+          difficulty: editingTask?.difficulty ?? "MEDIUM",
+        })
+      : createTask({
+          planId: activePlan!.id,
+          routineId: undefined,
+          title: form.title.trim(),
+          description: `${form.subject.trim()} · criado pela central operacional`,
+          category: "STUDY",
+          priority: form.priority,
+          difficulty: "MEDIUM",
+          status: "TODO",
+          estimatedMinutes: Number(form.estimatedMinutes),
+          scheduledDate: form.scheduledDate,
+          scheduledTime: form.scheduledTime || undefined,
+          dueDate: form.dueDate,
+          subject: form.subject.trim(),
+        });
+
+    request
       .then(async () => {
-        setFeedback("Tarefa criada e adicionada ao fluxo operacional.");
-        setForm(initialFormState);
+        setFeedback(
+          editingTaskId
+            ? "Tarefa atualizada com sucesso."
+            : "Tarefa criada e adicionada ao fluxo operacional.",
+        );
+        resetTaskForm();
         await refreshBoard();
         router.refresh();
       })
       .catch(() => {
-        setError("Nao foi possivel criar a tarefa agora.");
+        setError(editingTaskId ? "Nao foi possivel atualizar a tarefa agora." : "Nao foi possivel criar a tarefa agora.");
+        setIsBusy(false);
+      });
+  }
+
+  function handleDeleteTask(task: TaskRecord) {
+    const confirmed = window.confirm(`Remover a tarefa "${task.title}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setError(null);
+    setFeedback(null);
+    setIsBusy(true);
+
+    deleteTask(task.id)
+      .then(async () => {
+        if (editingTaskId === task.id) {
+          resetTaskForm();
+        }
+        setFeedback(`Tarefa "${task.title}" removida.`);
+        await refreshBoard();
+        router.refresh();
+      })
+      .catch(() => {
+        setError("Nao foi possivel remover essa tarefa agora.");
         setIsBusy(false);
       });
   }
@@ -184,13 +276,29 @@ export function TaskOperationsPanel() {
   function runTaskAction(task: TaskRecord, action: "start" | "pause" | "block" | "done") {
     setError(null);
     setFeedback(null);
+
+    let actualMinutes: number | undefined;
+    if (action === "done") {
+      const parsed = parseActualMinutesInput(task);
+      if (parsed.cancelled) {
+        return;
+      }
+
+      if (parsed.actualMinutes === null) {
+        setError("Informe um numero valido de minutos para concluir a tarefa.");
+        return;
+      }
+
+      actualMinutes = parsed.actualMinutes;
+    }
+
     setIsBusy(true);
 
     const operation =
       action === "start"
         ? startExecution(task.id)
         : action === "done"
-          ? stopExecution(task.id, task.estimatedMinutes)
+          ? stopExecution(task.id, actualMinutes)
           : updateTaskStatus(task.id, action === "pause" ? "PAUSED" : "BLOCKED");
 
     operation
@@ -241,8 +349,8 @@ export function TaskOperationsPanel() {
           <div className="operations-grid">
             <form className="task-quick-form" onSubmit={handleCreateTask}>
               <div className="task-quick-form-head">
-                <strong>Nova tarefa rapida</strong>
-                <span>Entrar com o minimo de atrito</span>
+                <strong>{editingTaskId ? "Editar tarefa" : "Nova tarefa rapida"}</strong>
+                <span>{editingTaskId ? "Ajuste o bloco operacional" : "Entrar com o minimo de atrito"}</span>
               </div>
 
               <label>
@@ -327,8 +435,13 @@ export function TaskOperationsPanel() {
               </div>
 
               <button className="task-submit-button" type="submit" disabled={isBusy}>
-                {isBusy ? "Salvando..." : "Criar tarefa"}
+                {isBusy ? "Salvando..." : editingTaskId ? "Salvar tarefa" : "Criar tarefa"}
               </button>
+              {editingTaskId ? (
+                <button className="task-submit-button secondary" type="button" onClick={resetTaskForm} disabled={isBusy}>
+                  Cancelar edicao
+                </button>
+              ) : null}
             </form>
 
             <div className="operations-task-stack">
@@ -367,6 +480,12 @@ export function TaskOperationsPanel() {
                     </button>
                     <button type="button" onClick={() => runTaskAction(task, "block")} disabled={isBusy}>
                       Bloquear
+                    </button>
+                    <button type="button" onClick={() => handleEditTask(task)} disabled={isBusy}>
+                      Editar
+                    </button>
+                    <button type="button" onClick={() => handleDeleteTask(task)} disabled={isBusy}>
+                      Remover
                     </button>
                   </div>
                 </article>

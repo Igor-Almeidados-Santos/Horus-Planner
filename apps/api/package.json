@@ -7,7 +7,7 @@
     "build": "nest build",
     "lint": "tsc --noEmit",
     "seed:firestore": "ts-node scripts/seed-firestore.ts",
-    "test": "node -e \"console.log('No API tests configured yet')\""
+    "test": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"CommonJS\",\"moduleResolution\":\"Node\"}' node --test -r ./node_modules/ts-node/register/transpile-only test/*.test.ts"
   },
   "dependencies": {
     "firebase-admin": "^13.4.0",

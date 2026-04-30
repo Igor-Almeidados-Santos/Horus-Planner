@@ -57,8 +57,12 @@ export type TaskRecord = {
 export type PlanSummary = {
   id: string;
   title: string;
+  description?: string;
   status: "DRAFT" | "ACTIVE" | "PAUSED" | "ARCHIVED";
   version: number;
+  planningHorizon?: string;
+  source?: string;
+  createdByAgent?: boolean;
   routinesCount: number;
   tasksCount: number;
 };
@@ -135,6 +139,8 @@ export type CreateTaskInput = {
   subject: string;
 };
 
+export type UpdateTaskInput = Partial<CreateTaskInput>;
+
 export type CreateGoalInput = {
   title: string;
   description: string;
@@ -156,6 +162,10 @@ export type CreatePlanInput = {
   source: string;
   createdByAgent: boolean;
 };
+
+export type UpdatePlanInput = Partial<
+  Pick<CreatePlanInput, "title" | "description" | "status" | "planningHorizon" | "source">
+>;
 
 export type CreateRoutineInput = {
   planId: string;
@@ -493,15 +503,22 @@ export async function fetchDashboardToday() {
   return apiRequest("/api/dashboard/today");
 }
 
-export async function fetchWorkspaceData(token?: string | null): Promise<WorkspaceData> {
+export async function fetchWorkspaceData(input?: {
+  token?: string | null;
+  allowDemoFallback?: boolean;
+}): Promise<WorkspaceData> {
   try {
     return await apiRequest<WorkspaceData>("/api/dashboard/workspace", {
-      token,
+      token: input?.token,
       auth: true,
       timeoutMs: 4000,
     });
-  } catch {
-    return defaultWorkspaceData;
+  } catch (error) {
+    if (input?.allowDemoFallback) {
+      return defaultWorkspaceData;
+    }
+
+    throw error;
   }
 }
 
@@ -567,6 +584,19 @@ export function createTask(payload: CreateTaskInput) {
   });
 }
 
+export function updateTask(id: string, payload: UpdateTaskInput) {
+  return apiRequest<TaskRecord>(`/api/tasks/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteTask(id: string) {
+  return apiRequest<{ success: true }>(`/api/tasks/${id}`, {
+    method: "DELETE",
+  });
+}
+
 export function createGoal(payload: CreateGoalInput) {
   return apiRequest<GoalRecord>("/api/goals", {
     method: "POST",
@@ -581,9 +611,22 @@ export function updateGoal(id: string, payload: UpdateGoalInput) {
   });
 }
 
+export function deleteGoal(id: string) {
+  return apiRequest<{ success: true }>(`/api/goals/${id}`, {
+    method: "DELETE",
+  });
+}
+
 export function createPlan(payload: CreatePlanInput) {
   return apiRequest<PlanSummary>("/api/plans", {
     method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updatePlan(id: string, payload: UpdatePlanInput) {
+  return apiRequest<PlanSummary>(`/api/plans/${id}`, {
+    method: "PATCH",
     body: JSON.stringify(payload),
   });
 }
@@ -634,7 +677,7 @@ export function startExecution(taskId: string, notes?: string) {
   });
 }
 
-export function stopExecution(taskId: string, actualMinutes: number, notes?: string) {
+export function stopExecution(taskId: string, actualMinutes?: number, notes?: string) {
   return apiRequest<ExecutionLog>("/api/executions/stop", {
     method: "POST",
     body: JSON.stringify({ taskId, actualMinutes, notes }),

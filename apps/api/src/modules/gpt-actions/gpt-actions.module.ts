@@ -8,6 +8,7 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import {
+  ArrayMinSize,
   IsArray,
   IsInt,
   IsIn,
@@ -51,6 +52,7 @@ class GptActionTaskDto {
 
   @IsOptional()
   @IsInt()
+  @Min(0)
   scheduledDayOffset?: number;
 
   @IsOptional()
@@ -81,6 +83,7 @@ class GptActionRoutineDto {
   timePreference?: string;
 
   @IsArray()
+  @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => GptActionTaskDto)
   tasks!: GptActionTaskDto[];
@@ -117,6 +120,7 @@ class GptActionPlanDto {
   planningHorizon?: string;
 
   @IsArray()
+  @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => GptActionRoutineDto)
   routines!: GptActionRoutineDto[];
@@ -198,6 +202,7 @@ class GptActionsController {
                 },
               },
               "401": { description: "Invalid or missing GPT action key." },
+              "400": { description: "Payload validation failed." },
             },
           },
         },
@@ -256,6 +261,7 @@ class GptActionsController {
               },
               routines: {
                 type: "array",
+                minItems: 1,
                 items: { $ref: "#/components/schemas/RoutineInput" },
               },
             },
@@ -276,6 +282,7 @@ class GptActionsController {
               },
               tasks: {
                 type: "array",
+                minItems: 1,
                 items: { $ref: "#/components/schemas/TaskInput" },
               },
             },
@@ -297,11 +304,12 @@ class GptActionsController {
               },
               estimatedMinutes: { type: "integer", minimum: 5 },
               context: { type: "string" },
-              scheduledDayOffset: { type: "integer" },
-              dueDayOffset: { type: "integer" },
+              scheduledDayOffset: { type: "integer", minimum: 0 },
+              dueDayOffset: { type: "integer", minimum: 0 },
               scheduledTime: {
                 type: "string",
                 description: "Preferred HH:MM time for the task.",
+                pattern: "^([01]\\d|2[0-3]):[0-5]\\d$",
               },
             },
           },

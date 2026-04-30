@@ -4,6 +4,7 @@ import { startTransition, useEffect, useMemo, useState, type FormEvent } from "r
 import { useRouter } from "next/navigation";
 import {
   createGoal,
+  deleteGoal,
   fetchGoals,
   updateGoal,
   type CreateGoalInput,
@@ -63,6 +64,7 @@ export function GoalsOperationsPanel() {
   const router = useRouter();
   const [goals, setGoals] = useState<GoalRecord[]>([]);
   const [form, setForm] = useState<GoalFormState>(initialGoalForm);
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -105,13 +107,31 @@ export function GoalsOperationsPanel() {
     setForm((current) => ({ ...current, [key]: value }));
   }
 
+  function handleEditGoal(goal: GoalRecord) {
+    setError(null);
+    setFeedback(null);
+    setEditingGoalId(goal.id);
+    setForm({
+      title: goal.title,
+      description: goal.description,
+      category: goal.category,
+      priority: goal.priority,
+      targetDate: goal.targetDate,
+    });
+  }
+
+  function resetGoalForm() {
+    setEditingGoalId(null);
+    setForm(initialGoalForm);
+  }
+
   function handleCreateGoal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsBusy(true);
     setError(null);
     setFeedback(null);
 
-    createGoal({
+    const payload = {
       title: form.title.trim(),
       description: form.description.trim(),
       category: form.category.trim(),
@@ -119,15 +139,31 @@ export function GoalsOperationsPanel() {
       status: "ACTIVE",
       progress: 0,
       targetDate: form.targetDate,
-    })
+    } as const;
+
+    const request = editingGoalId
+      ? updateGoal(editingGoalId, {
+          title: payload.title,
+          description: payload.description,
+          category: payload.category,
+          priority: payload.priority,
+          targetDate: payload.targetDate,
+        })
+      : createGoal(payload);
+
+    request
       .then(async () => {
-        setFeedback("Objetivo criado e adicionado ao radar principal.");
-        setForm(initialGoalForm);
+        setFeedback(
+          editingGoalId
+            ? "Objetivo atualizado com sucesso."
+            : "Objetivo criado e adicionado ao radar principal.",
+        );
+        resetGoalForm();
         await refreshGoals();
         router.refresh();
       })
       .catch(() => {
-        setError("Nao foi possivel criar o objetivo agora.");
+        setError(editingGoalId ? "Nao foi possivel atualizar o objetivo agora." : "Nao foi possivel criar o objetivo agora.");
         setIsBusy(false);
       });
   }
@@ -145,6 +181,31 @@ export function GoalsOperationsPanel() {
       })
       .catch(() => {
         setError("Nao foi possivel atualizar o objetivo.");
+        setIsBusy(false);
+      });
+  }
+
+  function handleDeleteGoal(goal: GoalRecord) {
+    const confirmed = window.confirm(`Remover o objetivo "${goal.title}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setIsBusy(true);
+    setError(null);
+    setFeedback(null);
+
+    deleteGoal(goal.id)
+      .then(async () => {
+        if (editingGoalId === goal.id) {
+          resetGoalForm();
+        }
+        setFeedback(`Objetivo "${goal.title}" removido.`);
+        await refreshGoals();
+        router.refresh();
+      })
+      .catch(() => {
+        setError("Nao foi possivel remover o objetivo.");
         setIsBusy(false);
       });
   }
@@ -179,8 +240,8 @@ export function GoalsOperationsPanel() {
           <div className="operations-grid">
             <form className="task-quick-form" onSubmit={handleCreateGoal}>
               <div className="task-quick-form-head">
-                <strong>Novo objetivo</strong>
-                <span>Defina direcao e prazo com clareza</span>
+                <strong>{editingGoalId ? "Editar objetivo" : "Novo objetivo"}</strong>
+                <span>{editingGoalId ? "Refine direcao, prioridade e prazo" : "Defina direcao e prazo com clareza"}</span>
               </div>
 
               <label>
@@ -242,8 +303,13 @@ export function GoalsOperationsPanel() {
               </label>
 
               <button className="task-submit-button" type="submit" disabled={isBusy}>
-                {isBusy ? "Salvando..." : "Criar objetivo"}
+                {isBusy ? "Salvando..." : editingGoalId ? "Salvar objetivo" : "Criar objetivo"}
               </button>
+              {editingGoalId ? (
+                <button className="task-submit-button secondary" type="button" onClick={resetGoalForm} disabled={isBusy}>
+                  Cancelar edicao
+                </button>
+              ) : null}
             </form>
 
             <div className="operations-task-stack">
@@ -276,6 +342,12 @@ export function GoalsOperationsPanel() {
                   </div>
 
                   <div className="operations-task-actions">
+                    <button type="button" onClick={() => handleEditGoal(goal)} disabled={isBusy}>
+                      Editar
+                    </button>
+                    <button type="button" onClick={() => handleDeleteGoal(goal)} disabled={isBusy}>
+                      Remover
+                    </button>
                     {statusOptions
                       .filter((item) => item !== goal.status)
                       .slice(0, 3)

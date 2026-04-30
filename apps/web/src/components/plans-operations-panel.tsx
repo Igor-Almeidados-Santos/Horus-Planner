@@ -7,6 +7,7 @@ import {
   archivePlan,
   createPlan,
   fetchPlans,
+  updatePlan,
   type PlanSummary,
 } from "../services/horus-api";
 
@@ -33,6 +34,7 @@ export function PlansOperationsPanel() {
   const router = useRouter();
   const [plans, setPlans] = useState<PlanSummary[]>([]);
   const [form, setForm] = useState<PlanFormState>(initialPlanForm);
+  const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -72,28 +74,59 @@ export function PlansOperationsPanel() {
     setForm((current) => ({ ...current, [key]: value }));
   }
 
+  function handleEditPlan(plan: PlanSummary) {
+    setError(null);
+    setFeedback(null);
+    setEditingPlanId(plan.id);
+    setForm({
+      title: plan.title,
+      description: plan.description ?? "",
+      planningHorizon: plan.planningHorizon ?? "",
+    });
+  }
+
+  function resetPlanForm() {
+    setEditingPlanId(null);
+    setForm(initialPlanForm);
+  }
+
   function handleCreatePlan(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsBusy(true);
     setError(null);
     setFeedback(null);
 
-    createPlan({
-      title: form.title.trim(),
-      description: form.description.trim(),
-      status: "DRAFT",
-      planningHorizon: form.planningHorizon.trim(),
-      source: "manual_web",
-      createdByAgent: false,
-    })
+    const editingPlan = editingPlanId ? plans.find((plan) => plan.id === editingPlanId) ?? null : null;
+
+    const request = editingPlanId
+      ? updatePlan(editingPlanId, {
+          title: form.title.trim(),
+          description: form.description.trim(),
+          planningHorizon: form.planningHorizon.trim(),
+          source: editingPlan?.source ?? "manual_web",
+        })
+      : createPlan({
+          title: form.title.trim(),
+          description: form.description.trim(),
+          status: "DRAFT",
+          planningHorizon: form.planningHorizon.trim(),
+          source: "manual_web",
+          createdByAgent: false,
+        });
+
+    request
       .then(async () => {
-        setFeedback("Plano criado e pronto para ativacao.");
-        setForm(initialPlanForm);
+        setFeedback(
+          editingPlanId
+            ? "Plano atualizado com sucesso."
+            : "Plano criado e pronto para ativacao.",
+        );
+        resetPlanForm();
         await refreshPlans();
         router.refresh();
       })
       .catch(() => {
-        setError("Nao foi possivel criar o plano.");
+        setError(editingPlanId ? "Nao foi possivel atualizar o plano." : "Nao foi possivel criar o plano.");
         setIsBusy(false);
       });
   }
@@ -151,8 +184,8 @@ export function PlansOperationsPanel() {
           <div className="operations-grid">
             <form className="task-quick-form" onSubmit={handleCreatePlan}>
               <div className="task-quick-form-head">
-                <strong>Novo plano</strong>
-                <span>Estruture uma versao operacional com rapidez</span>
+                <strong>{editingPlanId ? "Editar plano" : "Novo plano"}</strong>
+                <span>{editingPlanId ? "Refine o escopo e o horizonte do plano" : "Estruture uma versao operacional com rapidez"}</span>
               </div>
 
               <label>
@@ -187,8 +220,13 @@ export function PlansOperationsPanel() {
               </label>
 
               <button className="task-submit-button" type="submit" disabled={isBusy}>
-                {isBusy ? "Salvando..." : "Criar plano"}
+                {isBusy ? "Salvando..." : editingPlanId ? "Salvar plano" : "Criar plano"}
               </button>
+              {editingPlanId ? (
+                <button className="task-submit-button secondary" type="button" onClick={resetPlanForm} disabled={isBusy}>
+                  Cancelar edicao
+                </button>
+              ) : null}
             </form>
 
             <div className="operations-task-stack">
@@ -209,7 +247,12 @@ export function PlansOperationsPanel() {
                     <span>{plan.tasksCount} tarefas</span>
                   </div>
 
+                  {plan.description ? <p className="operations-goal-description">{plan.description}</p> : null}
+
                   <div className="operations-task-actions">
+                    <button type="button" onClick={() => handleEditPlan(plan)} disabled={isBusy}>
+                      Editar
+                    </button>
                     {plan.status !== "ACTIVE" ? (
                       <button type="button" onClick={() => handlePlanAction(plan, "activate")} disabled={isBusy}>
                         Ativar

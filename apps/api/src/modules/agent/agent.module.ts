@@ -357,7 +357,7 @@ class AgentController {
           throw new BadRequestException("Nao encontrei a tarefa mencionada para atualizar.");
         }
 
-        await this.database.updateTask(task.id, {
+        await this.database.updateTask(userId, task.id, {
           ...(decision.taskTitle ? { title: decision.taskTitle } : {}),
           ...(decision.taskDescription ? { description: decision.taskDescription } : {}),
           ...(decision.taskPriority ? { priority: decision.taskPriority } : {}),
@@ -397,7 +397,7 @@ class AgentController {
           throw new BadRequestException("Nao encontrei o objetivo mencionado para atualizar.");
         }
 
-        await this.database.updateGoal(goal.id, {
+        await this.database.updateGoal(userId, goal.id, {
           ...(decision.goalTitle ? { title: decision.goalTitle } : {}),
           ...(decision.goalDescription ? { description: decision.goalDescription } : {}),
           ...(decision.goalCategory ? { category: decision.goalCategory } : {}),
